@@ -80,7 +80,7 @@ export async function POST(request: NextRequest) {
     userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nSubscriptions:\n${itemsText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
     temperature: 0,
     maxOutputTokens: 4096,
-    retries: 0,
+    retries: 1,
   });
 
   const assistantReply = "Here is your SaaS renewal negotiation brief.";

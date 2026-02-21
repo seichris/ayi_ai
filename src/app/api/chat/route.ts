@@ -278,6 +278,36 @@ function missingPriceTools(items: IntakeState["lineItems"]): string[] {
     .map((item) => item.tool);
 }
 
+function buildAdvisorFailureReply(items: IntakeState["lineItems"]): string {
+  const missingPlans = missingPlanTools(items);
+  const missingPrices = missingPriceTools(items);
+
+  if (missingPlans.length > 0 || missingPrices.length > 0) {
+    const needed: string[] = [];
+    if (missingPlans.length > 0) needed.push("plan/tier");
+    if (missingPrices.length > 0) needed.push("annual price");
+    needed.push("contract term (if you have it)");
+
+    const lines = items.map((item) => {
+      const parts = [
+        item.tool,
+        item.plan ? `plan: ${item.plan}` : "plan: ?",
+        typeof item.seats === "number" ? `seats: ${item.seats}` : null,
+        typeof item.annualCost === "number" ? `annual: ${formatUsd(item.annualCost)}` : "annual: ?",
+      ].filter(Boolean);
+      return `- ${parts.join(" · ")}`;
+    });
+
+    return `I can help with this renewal, but I’m still missing a couple details (${needed.join(
+      ", "
+    )}).\n\nHere’s what I have so far:\n${lines.join(
+      "\n"
+    )}\n\nReply with the missing bits like: “Figma: $5,000/yr, annual term”.`;
+  }
+
+  return "I’ve got your subscription details, but I couldn’t generate the full brief right now. Reply “try again” and I’ll re-run it.";
+}
+
 function isAffirmative(text: string): boolean {
   return /^(y|yes|yeah|yep|sure|ok|okay|add|more)\b/i.test(text.trim());
 }
@@ -772,19 +802,18 @@ export async function POST(request: NextRequest) {
 
           let guidance: RenewalAdvice;
 
-          try {
-            guidance = await generateJson(renewalAdviceSchema, {
-              systemInstruction: ADVISOR_SYSTEM_PROMPT,
-              userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nSubscriptions:\n${itemsText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
-              temperature: 0,
-              maxOutputTokens: 4096,
-              retries: 0,
-            });
-          } catch (advisorError) {
-            const message =
-              advisorError instanceof Error ? advisorError.message : String(advisorError);
-            const fallbackReply =
-              "I can help with this renewal. I’m missing a couple details to put together the full brief. For each tool, share the plan/tier and what you pay per year (and the contract term if you have it).";
+	          try {
+	            guidance = await generateJson(renewalAdviceSchema, {
+	              systemInstruction: ADVISOR_SYSTEM_PROMPT,
+	              userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nSubscriptions:\n${itemsText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
+	              temperature: 0,
+	              maxOutputTokens: 4096,
+	              retries: 1,
+	            });
+	          } catch (advisorError) {
+	            const message =
+	              advisorError instanceof Error ? advisorError.message : String(advisorError);
+	            const fallbackReply = buildAdvisorFailureReply(nextState.lineItems);
 
             console.error("chat.advisor_error", {
               ip,
@@ -863,19 +892,18 @@ export async function POST(request: NextRequest) {
 
         let guidance: RenewalAdvice;
 
-        try {
-          guidance = await generateJson(renewalAdviceSchema, {
-            systemInstruction: ADVISOR_SYSTEM_PROMPT,
-            userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nSubscriptions:\n${itemsText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
-            temperature: 0,
-            maxOutputTokens: 4096,
-            retries: 0,
-          });
-        } catch (advisorError) {
-          const message =
-            advisorError instanceof Error ? advisorError.message : String(advisorError);
-          const fallbackReply =
-            "I can help with this renewal. I’m missing a couple details to put together the full brief. For each tool, share the plan/tier and what you pay per year (and the contract term if you have it).";
+	        try {
+	          guidance = await generateJson(renewalAdviceSchema, {
+	            systemInstruction: ADVISOR_SYSTEM_PROMPT,
+	            userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nSubscriptions:\n${itemsText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
+	            temperature: 0,
+	            maxOutputTokens: 4096,
+	            retries: 1,
+	          });
+	        } catch (advisorError) {
+	          const message =
+	            advisorError instanceof Error ? advisorError.message : String(advisorError);
+	          const fallbackReply = buildAdvisorFailureReply(state.lineItems);
 
           console.error("chat.advisor_error", {
             ip,
@@ -1107,21 +1135,20 @@ export async function POST(request: NextRequest) {
 
     let guidance: RenewalAdvice;
 
-    try {
-      guidance = await generateJson(renewalAdviceSchema, {
-        systemInstruction: ADVISOR_SYSTEM_PROMPT,
-        userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nConversation:\n${conversationText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
-        temperature: 0,
-        maxOutputTokens: 4096,
-        retries: 0,
-      });
-    } catch (advisorError) {
-      const message =
-        advisorError instanceof Error
-          ? advisorError.message
-          : String(advisorError);
-      const fallbackReply =
-        "I can help with this renewal. I’m missing a couple details to put together the full brief. For each tool, share the plan/tier and what you pay per year (and the contract term if you have it).";
+	    try {
+	      guidance = await generateJson(renewalAdviceSchema, {
+	        systemInstruction: ADVISOR_SYSTEM_PROMPT,
+	        userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nConversation:\n${conversationText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
+	        temperature: 0,
+	        maxOutputTokens: 4096,
+	        retries: 1,
+	      });
+	    } catch (advisorError) {
+	      const message =
+	        advisorError instanceof Error
+	          ? advisorError.message
+	          : String(advisorError);
+	      const fallbackReply = buildAdvisorFailureReply([]);
 
       console.error("chat.advisor_error", {
         ip,
