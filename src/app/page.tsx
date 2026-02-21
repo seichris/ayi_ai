@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -65,6 +65,7 @@ function mapHistoryToUiMessages(history: ChatSessionHistoryResponse): UiMessage[
 }
 
 export default function Home() {
+  const formRef = useRef<HTMLFormElement | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([INITIAL_ASSISTANT_MESSAGE]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
@@ -578,11 +579,27 @@ export default function Home() {
               )}
             </div>
 
-            <form className="space-y-3" onSubmit={handleSubmit}>
+            <form className="space-y-3" onSubmit={handleSubmit} ref={formRef}>
               <Textarea
                 placeholder="Example: Slack Business+ 45 seats $19k/yr. You can also list multiple tools."
                 value={inputValue}
                 onChange={(event) => setInputValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key !== "Enter" ||
+                    event.shiftKey ||
+                    (event.nativeEvent as KeyboardEvent).isComposing
+                  ) {
+                    return;
+                  }
+
+                  if (!canSubmit || isHydrating) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  formRef.current?.requestSubmit();
+                }}
                 rows={4}
                 className="bg-white"
               />
