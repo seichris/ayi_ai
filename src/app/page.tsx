@@ -66,6 +66,7 @@ function mapHistoryToUiMessages(history: ChatSessionHistoryResponse): UiMessage[
 
 export default function Home() {
   const formRef = useRef<HTMLFormElement | null>(null);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([INITIAL_ASSISTANT_MESSAGE]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
@@ -74,6 +75,7 @@ export default function Home() {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [authMe, setAuthMe] = useState<AuthMeResponse>({ user: null, gmailConnected: false });
   const [authLoading, setAuthLoading] = useState(true);
+  const [pinnedToBottom, setPinnedToBottom] = useState(true);
 
   const canSubmit = inputValue.trim().length > 0 && !isSubmitting;
 
@@ -211,6 +213,8 @@ export default function Home() {
       return;
     }
 
+    setPinnedToBottom(true);
+
     const userMessage: UiMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -275,6 +279,17 @@ export default function Home() {
       setIsSubmitting(false);
     }
   }
+
+  useEffect(() => {
+    const element = messageListRef.current;
+    if (!element || !pinnedToBottom) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      element.scrollTop = element.scrollHeight;
+    });
+  }, [messages.length, isSubmitting, isHydrating, pinnedToBottom]);
 
   function handleGoogleSignin() {
     const returnTo = window.location.href;
@@ -401,7 +416,20 @@ export default function Home() {
             <CardTitle className="text-lg">Chat</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="max-h-[58vh] space-y-4 overflow-y-auto pr-1">
+            <div
+              className="max-h-[58vh] space-y-4 overflow-y-auto pr-1"
+              ref={messageListRef}
+              onScroll={() => {
+                const element = messageListRef.current;
+                if (!element) {
+                  return;
+                }
+
+                const distanceFromBottom =
+                  element.scrollHeight - element.scrollTop - element.clientHeight;
+                setPinnedToBottom(distanceFromBottom < 48);
+              }}
+            >
               {isHydrating && (
                 <div className="flex justify-start">
                   <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-500">
