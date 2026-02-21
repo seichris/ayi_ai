@@ -357,51 +357,39 @@ export default function Home() {
     }
   }
 
-  return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_16%_22%,#d5f4f6_0%,transparent_38%),radial-gradient(circle_at_86%_16%,#fae9bf_0%,transparent_34%),linear-gradient(160deg,#f9fcff_0%,#fefaf2_100%)] px-4 py-8 text-zinc-900 md:px-8">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-        <div className="flex items-center justify-between rounded-3xl border border-zinc-200/70 bg-white/70 px-5 py-3 text-sm shadow-sm backdrop-blur">
-          <div className="flex items-center gap-2 text-zinc-600">
-            <span className="font-medium text-zinc-800">Account</span>
-            {authLoading ? (
-              <span>Loading…</span>
-            ) : authMe.user ? (
-              <span>
-                {authMe.user.name ? `${authMe.user.name} · ` : ""}
-                {authMe.user.email}
-              </span>
-            ) : (
-              <span>Not signed in</span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {authMe.user ? (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  type="button"
-                  onClick={handleConnectGmail}
-                  disabled={authLoading}
-                >
-                  {authMe.gmailConnected ? "Gmail Connected" : "Connect Gmail"}
-                </Button>
-                <Button variant="outline" size="sm" type="button" onClick={handleLogout}>
-                  Log out
-                </Button>
-              </>
-            ) : (
-              <Button variant="outline" size="sm" type="button" onClick={handleGoogleSignin}>
-                Sign in with Google
-              </Button>
-            )}
-          </div>
-        </div>
+	  return (
+	    <main className="min-h-screen bg-[radial-gradient(circle_at_16%_22%,#d5f4f6_0%,transparent_38%),radial-gradient(circle_at_86%_16%,#fae9bf_0%,transparent_34%),linear-gradient(160deg,#f9fcff_0%,#fefaf2_100%)] px-4 py-8 text-zinc-900 md:px-8">
+	      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+	        {!authLoading && authMe.user && (
+	          <div className="flex items-center justify-between rounded-3xl border border-zinc-200/70 bg-white/70 px-5 py-3 text-sm shadow-sm backdrop-blur">
+	            <div className="flex items-center gap-2 text-zinc-600">
+	              <span className="font-medium text-zinc-800">Account</span>
+	              <span>
+	                {authMe.user.name ? `${authMe.user.name} · ` : ""}
+	                {authMe.user.email}
+	              </span>
+	            </div>
+	            <div className="flex items-center gap-2">
+	              <Button
+	                variant="outline"
+	                size="sm"
+	                type="button"
+	                onClick={handleConnectGmail}
+	                disabled={authLoading}
+	              >
+	                {authMe.gmailConnected ? "Gmail Connected" : "Connect Gmail"}
+	              </Button>
+	              <Button variant="outline" size="sm" type="button" onClick={handleLogout}>
+	                Log out
+	              </Button>
+	            </div>
+	          </div>
+	        )}
 
-        <header className="px-1">
-          <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">
-            Stop overpaying on your SaaS subscriptions
-          </h1>
+	        <header className="px-1">
+	          <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">
+	            Stop overpaying on your SaaS subscriptions
+	          </h1>
         </header>
 
         <Card className="border-zinc-200/80 bg-white/80 shadow-xl backdrop-blur">
