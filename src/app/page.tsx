@@ -398,7 +398,7 @@ export default function Home() {
           </div>
         </div>
 
-        <header className="rounded-3xl border border-zinc-200/70 bg-white/70 p-6 shadow-sm backdrop-blur md:p-8">
+        <header className="px-1">
           <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">
             Stop overpaying on your SaaS subscriptions
           </h1>
