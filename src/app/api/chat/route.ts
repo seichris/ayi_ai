@@ -469,6 +469,48 @@ function parseApproxAnnualCost(text: string): number | null {
   return Math.round(base);
 }
 
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function pricingHintForTool(
+  items: IntakeState["lineItems"],
+  tool: string
+): string | null {
+  const benchmark = findBenchmarkForTool(tool);
+
+  if (!benchmark) {
+    return null;
+  }
+
+  const item = items.find((row) => row.tool === tool);
+  const perSeatMin = benchmark.marketAnnualPerSeatUsd.min;
+  const perSeatMax = benchmark.marketAnnualPerSeatUsd.max;
+
+  if (typeof item?.seats === "number" && Number.isFinite(item.seats) && item.seats > 0) {
+    const minTotal = Math.round(perSeatMin * item.seats);
+    const maxTotal = Math.round(perSeatMax * item.seats);
+    return `directional benchmark: ${formatUsd(minTotal)}–${formatUsd(maxTotal)}/yr for ${item.seats} seats (${perSeatMin}-${perSeatMax} USD/seat/yr).`;
+  }
+
+  return `directional benchmark: ${perSeatMin}-${perSeatMax} USD/seat/yr.`;
+}
+
+function buildMissingPricePrompt(items: IntakeState["lineItems"], missingTools: string[]): string {
+  const lines = missingTools.map((tool) => {
+    const hint = pricingHintForTool(items, tool);
+    return hint ? `- ${tool} (${hint})` : `- ${tool}`;
+  });
+
+  return `Thanks. What do you pay per year for each of these?\n${lines.join(
+    "\n"
+  )}\n\nReply like: “Slack: $19k/yr, Notion: $4,200/yr”.`;
+}
+
 const intakeExtractionSchema = z.object({
   lineItems: z.array(lineItemSchema).min(1).max(12),
 });
@@ -577,14 +619,12 @@ export async function POST(request: NextRequest) {
           };
           await persistIntakeState(sessionId, nextState);
 
-          const missingPrices = missingPriceTools(filled);
-          if (missingPrices.length > 0) {
-            const replyText = `Thanks. What do you pay per year for each of these?\n${missingPrices
-              .map((tool) => `- ${tool}`)
-              .join("\n")}\n\nYou can reply like: “Slack: $19k/yr, Notion: $4,200/yr”.`;
-            await persistMessage({ sessionId, role: "assistant", content: replyText });
-            return NextResponse.json({ sessionId, onTopic: true, replyText });
-          }
+	          const missingPrices = missingPriceTools(filled);
+	          if (missingPrices.length > 0) {
+	            const replyText = buildMissingPricePrompt(filled, missingPrices);
+	            await persistMessage({ sessionId, role: "assistant", content: replyText });
+	            return NextResponse.json({ sessionId, onTopic: true, replyText });
+	          }
 
           const replyText =
             "Got it. Is that all the subscriptions you want to include, or do you want to add another? Reply “yes” to add more, or “no” if that’s all.";
@@ -609,16 +649,14 @@ export async function POST(request: NextRequest) {
             };
             await persistIntakeState(sessionId, nextState);
 
-            const missingPrices = missingPriceTools(filled);
-            const replyText =
-              missingPrices.length > 0
-                ? `Thanks. What do you pay per year for each of these?\n${missingPrices
-                    .map((t) => `- ${t}`)
-                    .join("\n")}\n\nYou can reply like: “Slack: $19k/yr, Notion: $4,200/yr”.`
-                : "Got it. Do you want to add another subscription, or is that all?";
-            await persistMessage({ sessionId, role: "assistant", content: replyText });
-            return NextResponse.json({ sessionId, onTopic: true, replyText });
-          }
+	            const missingPrices = missingPriceTools(filled);
+	            const replyText =
+	              missingPrices.length > 0
+	                ? buildMissingPricePrompt(filled, missingPrices)
+	                : "Got it. Do you want to add another subscription, or is that all?";
+	            await persistMessage({ sessionId, role: "assistant", content: replyText });
+	            return NextResponse.json({ sessionId, onTopic: true, replyText });
+	          }
         }
 
         const replyText =
@@ -903,13 +941,11 @@ export async function POST(request: NextRequest) {
         if (missingPlansAfterAutofill.length === 0) {
           const missingPrices = missingPriceTools(mergedItems);
 
-          if (missingPrices.length > 0) {
-            const replyText = `Thanks. What do you pay per year for each of these?\n${missingPrices
-              .map((tool) => `- ${tool}`)
-              .join("\n")}\n\nYou can reply like: “Slack: $19k/yr, Notion: $4,200/yr”.`;
-            await persistMessage({ sessionId, role: "assistant", content: replyText });
-            return NextResponse.json({ sessionId, onTopic: true, replyText });
-          }
+	          if (missingPrices.length > 0) {
+	            const replyText = buildMissingPricePrompt(mergedItems, missingPrices);
+	            await persistMessage({ sessionId, role: "assistant", content: replyText });
+	            return NextResponse.json({ sessionId, onTopic: true, replyText });
+	          }
 
           nextState.stage = "confirm_more";
           await persistIntakeState(sessionId, nextState);
@@ -947,17 +983,15 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      const missingPrices = missingPriceTools(mergedItems);
-      if (missingPrices.length > 0) {
-        nextState.stage = "collect";
-        await persistIntakeState(sessionId, nextState);
+	      const missingPrices = missingPriceTools(mergedItems);
+	      if (missingPrices.length > 0) {
+	        nextState.stage = "collect";
+	        await persistIntakeState(sessionId, nextState);
 
-        const replyText = `Thanks. What do you pay per year for each of these?\n${missingPrices
-          .map((tool) => `- ${tool}`)
-          .join("\n")}\n\nYou can reply like: “Slack: $19k/yr, Notion: $4,200/yr”.`;
-        await persistMessage({ sessionId, role: "assistant", content: replyText });
-        return NextResponse.json({ sessionId, onTopic: true, replyText });
-      }
+	        const replyText = buildMissingPricePrompt(mergedItems, missingPrices);
+	        await persistMessage({ sessionId, role: "assistant", content: replyText });
+	        return NextResponse.json({ sessionId, onTopic: true, replyText });
+	      }
 
       nextState.stage = "confirm_more";
       await persistIntakeState(sessionId, nextState);
