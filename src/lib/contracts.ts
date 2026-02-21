@@ -27,6 +27,7 @@ export const lineItemSchema = z.object({
   plan: z.string().optional(),
   seats: optionalNumber,
   annualCost: optionalNumber,
+  annualCostPerSeat: optionalNumber,
   currency: z.string().min(1).default("USD"),
   term: z.string().optional(),
   notes: z.string().optional(),

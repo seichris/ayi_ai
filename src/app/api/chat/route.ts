@@ -74,6 +74,7 @@ Rules:
 - Only extract what the user explicitly provided. Do not guess missing fields.
 - If the plan/tier is unknown, omit it.
 - If annual cost is unknown, omit it.
+- If they give a price per seat per year, set annualCostPerSeat (not annualCost).
 - If seats are unknown, omit it.
 - If the user mentions multiple tools, return multiple line items.
 - Keep tool names short and recognizable (e.g. "Slack", "Notion", "Google Workspace").
@@ -86,6 +87,7 @@ Return JSON only with this schema:
       "plan": "string (optional)",
       "seats": number (optional),
       "annualCost": number (optional),
+      "annualCostPerSeat": number (optional),
       "currency": "string (optional, default USD)",
       "term": "string (optional)",
       "notes": "string (optional)"
@@ -274,7 +276,14 @@ function missingPlanTools(items: IntakeState["lineItems"]): string[] {
 
 function missingPriceTools(items: IntakeState["lineItems"]): string[] {
   return items
-    .filter((item) => typeof item.annualCost !== "number" || Number.isNaN(item.annualCost))
+    .filter((item) => {
+      const hasAnnual =
+        typeof item.annualCost === "number" && !Number.isNaN(item.annualCost);
+      const hasPerSeat =
+        typeof item.annualCostPerSeat === "number" &&
+        !Number.isNaN(item.annualCostPerSeat);
+      return !hasAnnual && !hasPerSeat;
+    })
     .map((item) => item.tool);
 }
 
@@ -293,7 +302,11 @@ function buildAdvisorFailureReply(items: IntakeState["lineItems"]): string {
         item.tool,
         item.plan ? `plan: ${item.plan}` : "plan: ?",
         typeof item.seats === "number" ? `seats: ${item.seats}` : null,
-        typeof item.annualCost === "number" ? `annual: ${formatUsd(item.annualCost)}` : "annual: ?",
+        typeof item.annualCost === "number"
+          ? `annual: ${formatUsd(item.annualCost)}`
+          : typeof item.annualCostPerSeat === "number"
+            ? `price/seat/yr: ${formatUsd(item.annualCostPerSeat)}`
+            : "annual: ?",
       ].filter(Boolean);
       return `- ${parts.join(" · ")}`;
     });
@@ -535,6 +548,21 @@ function parseApproxAnnualCost(text: string): number | null {
   return Math.round(base);
 }
 
+function parsePerSeatAnnualPrice(text: string): number | null {
+  const normalized = text.toLowerCase();
+  const mentionsSeat = /\bper\s*seat\b/.test(normalized) || /\/\s*seat\b/.test(normalized);
+  const mentionsYear =
+    /\bper\s*(year|yr)\b/.test(normalized) ||
+    /\/\s*(year|yr)\b/.test(normalized) ||
+    /\bannual(ly)?\b/.test(normalized);
+
+  if (!mentionsSeat || !mentionsYear) {
+    return null;
+  }
+
+  return parseApproxAnnualCost(text);
+}
+
 function formatUsd(value: number): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -574,7 +602,7 @@ function buildMissingPricePrompt(items: IntakeState["lineItems"], missingTools: 
 
   return `Thanks. What do you pay per year for each of these?\n${lines.join(
     "\n"
-  )}\n\nReply like: “Slack: $19k/yr, Notion: $4,200/yr”.`;
+  )}\n\nReply like: “Slack: $19k/yr, Notion: $4,200/yr”. If you only know per-seat pricing, reply like “$300/seat/yr”.`;
 }
 
 const intakeExtractionSchema = z.object({
@@ -783,18 +811,21 @@ export async function POST(request: NextRequest) {
           const nextState: IntakeState = { ...state, stage: "ready" };
           await persistIntakeState(sessionId, nextState);
 
-          const itemsText = nextState.lineItems
-            .map((item) => {
-              const parts = [
-                `tool=${item.tool}`,
-                item.plan ? `plan=${item.plan}` : null,
-                typeof item.seats === "number" ? `seats=${item.seats}` : null,
-                typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
-                item.term ? `term=${item.term}` : null,
-              ].filter(Boolean);
-              return `- ${parts.join(", ")}`;
-            })
-            .join("\n");
+	          const itemsText = nextState.lineItems
+	            .map((item) => {
+	              const parts = [
+	                `tool=${item.tool}`,
+	                item.plan ? `plan=${item.plan}` : null,
+	                typeof item.seats === "number" ? `seats=${item.seats}` : null,
+	                typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
+	                typeof item.annualCostPerSeat === "number"
+	                  ? `annualCostPerSeat=${item.annualCostPerSeat}`
+	                  : null,
+	                item.term ? `term=${item.term}` : null,
+	              ].filter(Boolean);
+	              return `- ${parts.join(", ")}`;
+	            })
+	            .join("\n");
 
           const benchmarkText = benchmarkContext(
             nextState.lineItems.map((item) => item.tool).join(", ")
@@ -873,18 +904,21 @@ export async function POST(request: NextRequest) {
       }
 
       if (state.stage === "ready") {
-        const itemsText = state.lineItems
-          .map((item) => {
-            const parts = [
-              `tool=${item.tool}`,
-              item.plan ? `plan=${item.plan}` : null,
-              typeof item.seats === "number" ? `seats=${item.seats}` : null,
-              typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
-              item.term ? `term=${item.term}` : null,
-            ].filter(Boolean);
-            return `- ${parts.join(", ")}`;
-          })
-          .join("\n");
+	        const itemsText = state.lineItems
+	          .map((item) => {
+	            const parts = [
+	              `tool=${item.tool}`,
+	              item.plan ? `plan=${item.plan}` : null,
+	              typeof item.seats === "number" ? `seats=${item.seats}` : null,
+	              typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
+	              typeof item.annualCostPerSeat === "number"
+	                ? `annualCostPerSeat=${item.annualCostPerSeat}`
+	                : null,
+	              item.term ? `term=${item.term}` : null,
+	            ].filter(Boolean);
+	            return `- ${parts.join(", ")}`;
+	          })
+	          .join("\n");
 
         const benchmarkText = benchmarkContext(
           state.lineItems.map((item) => item.tool).join(", ")
@@ -1096,26 +1130,49 @@ export async function POST(request: NextRequest) {
       }
 
       const missingPricesBefore = missingPriceTools(mergedItems);
-      if (missingPricesBefore.length === 1 && extracted.lineItems.length === 0) {
-        const parsedCost = parseApproxAnnualCost(userMessage);
-        if (parsedCost !== null) {
-          const targetTool = missingPricesBefore[0];
-          mergedItems = mergedItems.map((item) =>
-            item.tool === targetTool ? { ...item, annualCost: parsedCost } : item
-          );
-          nextState.lineItems = mergedItems;
+      if (missingPricesBefore.length === 1) {
+        const targetTool = missingPricesBefore[0];
+        const extractedOnlyTargetTool =
+          extractedItems.length === 0 || extractedItems.every((item) => item.tool === targetTool);
+
+        if (extractedOnlyTargetTool) {
+          const perSeat = parsePerSeatAnnualPrice(userMessage);
+          const parsedCost = perSeat ?? parseApproxAnnualCost(userMessage);
+
+          if (parsedCost !== null) {
+            mergedItems = mergedItems.map((item) => {
+              if (item.tool !== targetTool) return item;
+
+              if (perSeat !== null) {
+                const annualCost =
+                  typeof item.seats === "number" && Number.isFinite(item.seats)
+                    ? Math.round(perSeat * item.seats)
+                    : undefined;
+
+                return {
+                  ...item,
+                  annualCostPerSeat: perSeat,
+                  annualCost: annualCost ?? item.annualCost,
+                };
+              }
+
+              return { ...item, annualCost: parsedCost };
+            });
+
+            nextState.lineItems = mergedItems;
+          }
         }
       }
 
-	      const missingPrices = missingPriceTools(mergedItems);
-	      if (missingPrices.length > 0) {
-	        nextState.stage = "collect";
-	        await persistIntakeState(sessionId, nextState);
+      const missingPrices = missingPriceTools(mergedItems);
+      if (missingPrices.length > 0) {
+        nextState.stage = "collect";
+        await persistIntakeState(sessionId, nextState);
 
-	        const replyText = buildMissingPricePrompt(mergedItems, missingPrices);
-	        await persistMessage({ sessionId, role: "assistant", content: replyText });
-	        return NextResponse.json({ sessionId, onTopic: true, replyText });
-	      }
+        const replyText = buildMissingPricePrompt(mergedItems, missingPrices);
+        await persistMessage({ sessionId, role: "assistant", content: replyText });
+        return NextResponse.json({ sessionId, onTopic: true, replyText });
+      }
 
       nextState.stage = "confirm_more";
       await persistIntakeState(sessionId, nextState);
@@ -1127,9 +1184,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const conversationText = [...history, { role: "user", content: userMessage }]
-      .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
-      .join("\n");
+	    const conversationText = [...history, { role: "user", content: userMessage }]
+	      .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+	      .join("\n");
 
     const benchmarkText = benchmarkContext(userMessage);
 
