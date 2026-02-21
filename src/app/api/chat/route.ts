@@ -281,7 +281,7 @@ function isAffirmative(text: string): boolean {
 }
 
 function isNegative(text: string): boolean {
-  return /^(n|no|nope|nah|done|finished|that's all|thats all|all set|nothing else)\b/i.test(
+  return /^(n|no|nope|nah|done|finished|that's all|thats all|all set|nothing else|no more|no further)\b/i.test(
     text.trim()
   );
 }
@@ -303,6 +303,40 @@ function looksLikeSinglePlanForAll(text: string): boolean {
   }
   // Keep this conservative to avoid accidentally treating sentences as plan names.
   return normalized.length > 0 && normalized.length <= 32 && /\b(each|all|both|those|them)\b/.test(normalized);
+}
+
+function looksLikePlanName(text: string): boolean {
+  const normalized = text.trim();
+  if (normalized.length === 0 || normalized.length > 48) return false;
+  if (/[<>]/.test(normalized)) return false;
+  if (/\b(list|show|already shared|repeat|what did i|what do you have)\b/i.test(normalized)) {
+    return false;
+  }
+  // Plan names are usually short noun phrases, not full sentences.
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+  return wordCount <= 6;
+}
+
+function looksLikeListRequest(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return (
+    /\b(list|show|repeat)\b/.test(normalized) &&
+    (/\balready\b/.test(normalized) || /\bshared\b/.test(normalized) || /\bhave\b/.test(normalized))
+  );
+}
+
+function summarizeIntake(items: IntakeState["lineItems"]): string {
+  if (items.length === 0) return "I don’t have any subscriptions saved in this session yet.";
+  const lines = items.map((item) => {
+    const parts = [
+      item.tool,
+      item.plan ? `plan: ${item.plan}` : null,
+      typeof item.seats === "number" ? `seats: ${item.seats}` : null,
+      typeof item.annualCost === "number" ? `annual: ${formatUsd(item.annualCost)}` : null,
+    ].filter(Boolean);
+    return `- ${parts.join(" · ")}`;
+  });
+  return `Here’s what I have so far:\n${lines.join("\n")}`;
 }
 
 function middlePlanCandidates(plans: string[]): string[] {
@@ -512,7 +546,7 @@ function buildMissingPricePrompt(items: IntakeState["lineItems"], missingTools: 
 }
 
 const intakeExtractionSchema = z.object({
-  lineItems: z.array(lineItemSchema).min(1).max(12),
+  lineItems: z.array(lineItemSchema).max(12),
 });
 
 export async function POST(request: NextRequest) {
@@ -578,7 +612,12 @@ export async function POST(request: NextRequest) {
         const shouldBypassClassifier =
           state.stage === "confirm_more" ||
           state.stage === "confirm_plans" ||
-          state.stage === "prompt_signin";
+          state.stage === "prompt_signin" ||
+          (state.lineItems.length > 0 &&
+            (isAffirmative(userMessage) ||
+              isNegative(userMessage) ||
+              looksLikeListRequest(userMessage) ||
+              userMessage.trim().toLowerCase() === "correct"));
 
         if (shouldBypassClassifier) {
           isAllowed = true;
@@ -608,6 +647,12 @@ export async function POST(request: NextRequest) {
 
     if (prisma && sessionId) {
       const { state, userId } = await loadIntakeState(sessionId);
+
+      if (looksLikeListRequest(userMessage)) {
+        const replyText = summarizeIntake(state.lineItems);
+        await persistMessage({ sessionId, role: "assistant", content: replyText });
+        return NextResponse.json({ sessionId, onTopic: true, replyText });
+      }
 
       if (state.stage === "confirm_plans") {
         const normalized = userMessage.trim().toLowerCase();
@@ -863,6 +908,16 @@ export async function POST(request: NextRequest) {
       }
 
       if (state.stage !== "briefed") {
+      if (isNegative(userMessage) && state.lineItems.length > 0) {
+        // User said "no more" while we were asking to add another subscription.
+        const nextState: IntakeState = { ...state, stage: "confirm_more" };
+        await persistIntakeState(sessionId, nextState);
+        const replyText =
+          "Got it. Is that all the subscriptions you want to include, or do you want to add another? Reply “yes” to add more, or “no” if that’s all.";
+        await persistMessage({ sessionId, role: "assistant", content: replyText });
+        return NextResponse.json({ sessionId, onTopic: true, replyText });
+      }
+
       let extracted;
       try {
         extracted = await generateJson(intakeExtractionSchema, {
@@ -876,7 +931,14 @@ export async function POST(request: NextRequest) {
         extracted = { lineItems: [] as IntakeState["lineItems"] };
       }
 
-      let mergedItems = mergeLineItems(state.lineItems, extracted.lineItems ?? []);
+      const extractedItems = (extracted.lineItems ?? []).filter((item) => {
+        const tool = item.tool.trim().toLowerCase();
+        if (tool.length === 0) return false;
+        if (tool === "unknown" || tool === "n/a" || tool === "na" || tool === "none") return false;
+        return true;
+      });
+
+      let mergedItems = mergeLineItems(state.lineItems, extractedItems);
       const nextState: IntakeState = { ...state, lineItems: mergedItems };
 
       if (mergedItems.length === 0) {
@@ -889,7 +951,11 @@ export async function POST(request: NextRequest) {
       }
 
       const missingPlansBefore = missingPlanTools(mergedItems);
-      if (missingPlansBefore.length === 1 && extracted.lineItems.length === 0) {
+      if (
+        missingPlansBefore.length === 1 &&
+        extractedItems.length === 0 &&
+        looksLikePlanName(userMessage)
+      ) {
         const targetTool = missingPlansBefore[0];
         mergedItems = mergedItems.map((item) =>
           item.tool === targetTool ? { ...item, plan: userMessage } : item
@@ -902,7 +968,7 @@ export async function POST(request: NextRequest) {
         nextState.stage = "collect";
         await persistIntakeState(sessionId, nextState);
 
-        if (extracted.lineItems.length === 0) {
+        if (extractedItems.length === 0) {
           const tierSuggestions = mapTierSuggestions({
             message: userMessage,
             missingTools: missingPlans,
@@ -929,7 +995,7 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        if (extracted.lineItems.length === 0 && isMidTierAllTools(userMessage)) {
+        if (extractedItems.length === 0 && isMidTierAllTools(userMessage)) {
           const lines = missingPlans.map((tool) => {
             const plans = planOptionsForTool(tool);
             const candidates = middlePlanCandidates(plans);
@@ -949,7 +1015,7 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ sessionId, onTopic: true, replyText });
         }
 
-        if (extracted.lineItems.length === 0 && looksLikeSinglePlanForAll(userMessage)) {
+        if (extractedItems.length === 0 && looksLikeSinglePlanForAll(userMessage)) {
           const plan = userMessage.trim();
           mergedItems = mergedItems.map((item) =>
             missingPlans.includes(item.tool) ? { ...item, plan } : item
