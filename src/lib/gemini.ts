@@ -55,15 +55,27 @@ async function repairJsonOutput(
   apiKey: string,
   options: GenerateJsonOptions,
   rawOutput: string,
-  responseSchema: Record<string, unknown>
+  responseSchema: Record<string, unknown>,
+  validationError?: string
 ): Promise<string> {
+  const schemaText = JSON.stringify(responseSchema, null, 2);
+
   return invokeGemini(
     model,
     apiKey,
     {
       systemInstruction:
-        "You repair model output into a valid JSON object. Return JSON only with no commentary, no markdown, and no surrounding text.",
-      userPrompt: `Original task:\n${options.userPrompt}\n\nModel output to repair:\n${rawOutput}`,
+        "You repair model output into a valid JSON object that strictly matches a required JSON Schema. Include all required fields. Return JSON only with no commentary, no markdown, and no surrounding text.",
+      userPrompt: `Original task:\n${options.userPrompt}
+
+Required JSON Schema:
+${schemaText}
+
+Validation error to fix:
+${validationError ?? "N/A"}
+
+Model output to repair:
+${rawOutput}`,
       temperature: 0,
       maxOutputTokens: options.maxOutputTokens ?? 2200,
       retries: 0,
@@ -288,7 +300,8 @@ export async function generateJson<T>(
               apiKey,
               options,
               repairSource,
-              responseSchema
+              responseSchema,
+              lastError.message
             );
             return parseStructuredJson(schema, repairedText);
           } catch (repairError) {

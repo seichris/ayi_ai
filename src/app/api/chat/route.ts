@@ -76,6 +76,8 @@ Rules:
 - If the plan/tier is unknown, omit it.
 - If annual cost is unknown, omit it.
 - If they give a price per seat per year, set annualCostPerSeat (not annualCost).
+- Never treat seat counts or people counts as pricing.
+- Do not infer pricing from bare numbers unless the user clearly indicates money/cost context.
 - If seats are unknown, omit it.
 - If the user mentions multiple tools, return multiple line items.
 - Keep tool names short and recognizable (e.g. "Slack", "Notion", "Google Workspace").
@@ -413,6 +415,13 @@ function buildAdvisorErrorReply(items: IntakeState["lineItems"], errorMessage: s
     return "I can’t reach the pricing model right now because `GOOGLE_AI_STUDIO_API_KEY` isn’t set on the server.";
   }
 
+  if (
+    normalized.includes("invalid input: expected") ||
+    normalized.includes("invalid option: expected one of")
+  ) {
+    return "I hit a formatting issue while generating the brief. Reply “try again” and I’ll regenerate it.";
+  }
+
   return buildAdvisorFailureReply(items);
 }
 
@@ -533,49 +542,6 @@ function mapTierSuggestions(params: {
   }
 
   return Object.keys(suggestions).length > 0 ? suggestions : null;
-}
-
-function parseApproxAnnualCost(text: string): number | null {
-  const normalized = text.trim().toLowerCase();
-  const match = normalized.match(/(\$?\s*)(\d[\d,]*)(\.\d+)?\s*([km])?/i);
-
-  if (!match) {
-    return null;
-  }
-
-  const integerPart = match[2]?.replace(/,/g, "") ?? "";
-  const decimalPart = match[3] ?? "";
-  const suffix = match[4]?.toLowerCase();
-  const base = Number(`${integerPart}${decimalPart}`);
-
-  if (!Number.isFinite(base)) {
-    return null;
-  }
-
-  if (suffix === "k") {
-    return Math.round(base * 1_000);
-  }
-
-  if (suffix === "m") {
-    return Math.round(base * 1_000_000);
-  }
-
-  return Math.round(base);
-}
-
-function parsePerSeatAnnualPrice(text: string): number | null {
-  const normalized = text.toLowerCase();
-  const mentionsSeat = /\bper\s*seat\b/.test(normalized) || /\/\s*seat\b/.test(normalized);
-  const mentionsYear =
-    /\bper\s*(year|yr)\b/.test(normalized) ||
-    /\/\s*(year|yr)\b/.test(normalized) ||
-    /\bannual(ly)?\b/.test(normalized);
-
-  if (!mentionsSeat || !mentionsYear) {
-    return null;
-  }
-
-  return parseApproxAnnualCost(text);
 }
 
 function formatUsd(value: number): string {
@@ -814,6 +780,7 @@ export async function POST(request: NextRequest) {
       intakeState &&
         (intakeState.stage === "confirm_more" ||
           intakeState.stage === "confirm_plans" ||
+          intakeState.stage === "ready" ||
           intakeState.stage === "prompt_signin" ||
           (intakeState.lineItems.length > 0 &&
             (isAffirmative(userMessage) ||
@@ -1158,34 +1125,8 @@ export async function POST(request: NextRequest) {
         extracted = { lineItems: [] as IntakeState["lineItems"] };
       }
 
-      const messageHasMoneySignal =
-        /(\$|usd|dollar|per\s*(year|yr)|\/\s*(year|yr)|annual)/i.test(userMessage);
-      const messageHasSeatSignal = /\b(seat|seats|people|users)\b/i.test(userMessage);
-      const messageHasPerSeatSignal = /(\bper\s*seat\b|\/\s*seat\b)/i.test(userMessage);
-
       const extractedItems = (extracted.lineItems ?? [])
-        .map((item) => {
-          const sanitized = { ...item };
-
-          // The extractor occasionally mis-assigns "20 seats/people" as an annual cost.
-          // Only accept pricing fields when the user message contains clear money signals.
-          if (!messageHasMoneySignal) {
-            delete sanitized.annualCost;
-            delete sanitized.annualCostPerSeat;
-          } else if (!messageHasPerSeatSignal) {
-            // If the user didn't mention per-seat pricing, drop per-seat to avoid confusion.
-            delete sanitized.annualCostPerSeat;
-          }
-
-          // If the message mentions seats/people but not money and we got an annualCost,
-          // prefer treating it as missing pricing and ask explicitly later.
-          if (messageHasSeatSignal && !messageHasMoneySignal) {
-            delete sanitized.annualCost;
-            delete sanitized.annualCostPerSeat;
-          }
-
-          return sanitized;
-        })
+        .map((item) => ({ ...item }))
         .filter((item) => {
           const tool = item.tool.trim().toLowerCase();
           if (tool.length === 0) return false;
@@ -1312,41 +1253,6 @@ export async function POST(request: NextRequest) {
         )}\n\nReply with the plan for each tool (e.g. “Slack: Business+”).`;
         await persistMessage({ sessionId, role: "assistant", content: replyText });
         return NextResponse.json({ sessionId, onTopic: true, replyText });
-      }
-
-      const missingPricesBefore = missingPriceTools(mergedItems);
-      if (missingPricesBefore.length === 1) {
-        const targetTool = missingPricesBefore[0];
-        const extractedOnlyTargetTool =
-          extractedItems.length === 0 || extractedItems.every((item) => item.tool === targetTool);
-
-        if (extractedOnlyTargetTool) {
-          const perSeat = parsePerSeatAnnualPrice(userMessage);
-          const parsedCost = perSeat ?? parseApproxAnnualCost(userMessage);
-
-          if (parsedCost !== null) {
-            mergedItems = mergedItems.map((item) => {
-              if (item.tool !== targetTool) return item;
-
-              if (perSeat !== null) {
-                const annualCost =
-                  typeof item.seats === "number" && Number.isFinite(item.seats)
-                    ? Math.round(perSeat * item.seats)
-                    : undefined;
-
-                return {
-                  ...item,
-                  annualCostPerSeat: perSeat,
-                  annualCost: annualCost ?? item.annualCost,
-                };
-              }
-
-              return { ...item, annualCost: parsedCost };
-            });
-
-            nextState.lineItems = mergedItems;
-          }
-        }
       }
 
       const missingPrices = missingPriceTools(mergedItems);
