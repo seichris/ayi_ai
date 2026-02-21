@@ -276,7 +276,7 @@ export default function Home() {
   }
 
   function handleGoogleSignin() {
-    const returnTo = window.location.pathname + window.location.search;
+    const returnTo = window.location.href;
     const params = new URLSearchParams({
       returnTo,
       chatSessionId: sessionId ?? "",
@@ -285,7 +285,7 @@ export default function Home() {
   }
 
   function handleConnectGmail() {
-    const returnTo = window.location.pathname + window.location.search;
+    const returnTo = window.location.href;
     const params = new URLSearchParams({ returnTo });
     window.location.href = `/api/auth/gmail/start?${params.toString()}`;
   }
