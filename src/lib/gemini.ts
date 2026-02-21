@@ -31,6 +31,33 @@ class GeminiRequestError extends Error {
   }
 }
 
+function parseStructuredJson<T>(schema: ZodType<T>, text: string): T {
+  const jsonText = extractJsonText(text);
+  const parsed = JSON.parse(jsonText);
+  return schema.parse(parsed);
+}
+
+async function repairJsonOutput(
+  model: string,
+  apiKey: string,
+  options: GenerateJsonOptions,
+  rawOutput: string
+): Promise<string> {
+  return invokeGemini(
+    model,
+    apiKey,
+    {
+      systemInstruction:
+        "You repair model output into a valid JSON object. Return JSON only with no commentary, no markdown, and no surrounding text.",
+      userPrompt: `Original task:\n${options.userPrompt}\n\nModel output to repair:\n${rawOutput}`,
+      temperature: 0,
+      maxOutputTokens: options.maxOutputTokens ?? 2200,
+      retries: 0,
+    },
+    true
+  );
+}
+
 function extractJsonText(rawText: string): string {
   const trimmed = rawText.trim();
 
@@ -135,13 +162,34 @@ export async function generateJson<T>(
     const model = models[modelIndex];
 
     for (let attempt = 0; attempt <= retries; attempt += 1) {
+      let responseText: string | null = null;
+
       try {
-        const text = await invokeGemini(model, apiKey, options, attempt > 0);
-        const jsonText = extractJsonText(text);
-        const parsed = JSON.parse(jsonText);
-        return schema.parse(parsed);
+        responseText = await invokeGemini(model, apiKey, options, attempt > 0);
+        return parseStructuredJson(schema, responseText);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+
+        const canRepair =
+          responseText &&
+          (lastError instanceof SyntaxError || lastError instanceof z.ZodError);
+
+        if (canRepair) {
+          try {
+            const repairedText = await repairJsonOutput(
+              model,
+              apiKey,
+              options,
+              responseText
+            );
+            return parseStructuredJson(schema, repairedText);
+          } catch (repairError) {
+            lastError =
+              repairError instanceof Error
+                ? repairError
+                : new Error(String(repairError));
+          }
+        }
 
         if (lastError instanceof GeminiRequestError && lastError.status === 404) {
           break;

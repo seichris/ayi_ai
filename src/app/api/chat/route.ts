@@ -277,7 +277,7 @@ export async function POST(request: NextRequest) {
   "assumptions": ["string"],
   "confidence": "low|medium|high"
 }\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If missing data, include clarifying questions and keep confidence lower.`,
-      temperature: 0.25,
+      temperature: 0,
       maxOutputTokens: 2200,
       retries: 1,
     });
