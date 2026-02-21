@@ -651,6 +651,68 @@ function demoLineItems(): IntakeState["lineItems"] {
   ];
 }
 
+function demoGuidance(items: IntakeState["lineItems"]): RenewalAdvice {
+  const priced = items.filter((item) => typeof item.annualCost === "number");
+  const currentTotal = priced.reduce((sum, item) => sum + (item.annualCost ?? 0), 0);
+
+  const marketTotals = items.map((item) => {
+    const benchmark = findBenchmarkForTool(item.tool);
+    const seats = typeof item.seats === "number" ? item.seats : 0;
+    if (!benchmark || seats <= 0) return { min: 0, max: 0 };
+    return {
+      min: Math.round(benchmark.marketAnnualPerSeatUsd.min * seats),
+      max: Math.round(benchmark.marketAnnualPerSeatUsd.max * seats),
+    };
+  });
+
+  const marketMin = marketTotals.reduce((sum, row) => sum + row.min, 0);
+  const marketMax = marketTotals.reduce((sum, row) => sum + row.max, 0);
+
+  const savingsMinPct = 12;
+  const savingsMaxPct = 26;
+  const amountMin = currentTotal > 0 ? Math.round((currentTotal * savingsMinPct) / 100) : undefined;
+  const amountMax = currentTotal > 0 ? Math.round((currentTotal * savingsMaxPct) / 100) : undefined;
+
+  return {
+    onTopic: true,
+    lineItems: items,
+    marketRange: {
+      min: marketMin || Math.max(0, Math.round(currentTotal * 0.7)),
+      max: marketMax || Math.max(0, Math.round(currentTotal * 0.95)),
+      currency: "USD",
+      basis: "Demo mode: directional benchmarks aggregated across your listed tools and seats.",
+      confidence: "medium",
+    },
+    savingsEstimate: {
+      percentMin: savingsMinPct,
+      percentMax: savingsMaxPct,
+      amountMin,
+      amountMax,
+      currency: "USD",
+      explanation:
+        "Demo mode: assumes you’re paying above market and can negotiate down via term/seat commitments.",
+    },
+    leveragePoints: [
+      "Ask for a renewal discount tied to multi-year term and co-term alignment.",
+      "Use competitive alternatives and budget constraints as leverage.",
+      "Request price protection and cap uplifts in writing.",
+      "Trade flexible seat floors for better unit pricing.",
+    ],
+    counterEmail: {
+      subject: "Renewal pricing adjustment request",
+      body:
+        "Hi team,\n\nWe’re reviewing renewal options internally. Based on comparable market pricing and our current seat count, the current renewal quote is above where we need to land.\n\nIf you can align pricing closer to market and include price protection (cap uplifts, clear renewal terms), we’re prepared to move forward on an annual renewal and commit to our planned seat level.\n\nCan you send an updated proposal with:\n- improved unit pricing for the current seat count\n- any multi-year / prepay options\n- written price protection for the next term\n\nThanks,\n",
+    },
+    clarifyingQuestions: [],
+    assumptions: [
+      "Demo mode: mid-tier plans for Figma, Notion, Slack, and GitHub.",
+      "Demo mode: annual term and 20 seats per tool.",
+      "Demo mode: current spend is slightly above fair market.",
+    ],
+    confidence: "medium",
+  };
+}
+
 export async function POST(request: NextRequest) {
   const ip = getClientIp(request);
   if (RATE_LIMIT_ENABLED) {
@@ -695,33 +757,7 @@ export async function POST(request: NextRequest) {
 
     if (DEMO_MODE_ENABLED) {
       const demoItems = demoLineItems();
-      const itemsText = demoItems
-        .map((item) => {
-          const parts = [
-            `tool=${item.tool}`,
-            item.plan ? `plan=${item.plan}` : null,
-            typeof item.seats === "number" ? `seats=${item.seats}` : null,
-            typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
-            typeof item.annualCostPerSeat === "number"
-              ? `annualCostPerSeat=${item.annualCostPerSeat}`
-              : null,
-            item.term ? `term=${item.term}` : null,
-          ].filter(Boolean);
-          return `- ${parts.join(", ")}`;
-        })
-        .join("\n");
-
-      const benchmarkText = benchmarkContext(
-        demoItems.map((item) => item.tool).join(", ")
-      );
-
-      const guidance = await generateJson(renewalAdviceSchema, {
-        systemInstruction: ADVISOR_SYSTEM_PROMPT,
-        userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nSubscriptions:\n${itemsText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
-        temperature: 0,
-        maxOutputTokens: 4096,
-        retries: 1,
-      });
+      const guidance = demoGuidance(demoItems);
 
       const assistantReply = "Here is your SaaS renewal negotiation brief.";
 
