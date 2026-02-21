@@ -322,6 +322,125 @@ function middlePlanCandidates(plans: string[]): string[] {
   return [plans[upperMid - 1], plans[upperMid]];
 }
 
+type TierIntent = "low" | "mid" | "top";
+
+function parseTierStatements(text: string): { toolIntents: Map<string, TierIntent>; restIntent?: TierIntent } {
+  const toolIntents = new Map<string, TierIntent>();
+  const normalized = text.toLowerCase();
+
+  const tierRegex =
+    /\b(low|entry|starter|bottom|lowest|mid|middle|top|highest|enterprise)\b\s*(?:-|\s*)tier\b\s*for\s+([^.;\n]+)/gi;
+
+  const toIntent = (keyword: string): TierIntent => {
+    if (keyword === "mid" || keyword === "middle") return "mid";
+    if (keyword === "top" || keyword === "highest" || keyword === "enterprise") return "top";
+    return "low";
+  };
+
+  let match: RegExpExecArray | null;
+  while ((match = tierRegex.exec(normalized))) {
+    const keyword = match[1] ?? "";
+    const target = (match[2] ?? "").trim();
+    const intent = toIntent(keyword);
+
+    if (
+      /\b(the\s+)?(other|others|rest|remaining|everything\s+else)\b/.test(target) ||
+      /\bother\s+\d+\b/.test(target)
+    ) {
+      // Best-effort: apply to tools not explicitly mentioned elsewhere.
+      // (We'll decide which tools are "rest" at call-site.)
+      return { toolIntents, restIntent: intent };
+    }
+
+    const parts = target
+      .split(/,|&| and /i)
+      .map((piece) => piece.trim())
+      .filter(Boolean);
+
+    for (const part of parts) {
+      toolIntents.set(part, intent);
+    }
+  }
+
+  return { toolIntents };
+}
+
+function suggestionForIntent(plans: string[], intent: TierIntent): string[] {
+  if (intent === "top") {
+    return plans.length > 0 ? [plans[plans.length - 1]] : [];
+  }
+  if (intent === "low") {
+    return plans.length > 0 ? [plans[0]] : [];
+  }
+  return middlePlanCandidates(plans);
+}
+
+function mapTierSuggestions(params: {
+  message: string;
+  missingTools: string[];
+}): Record<string, string[]> | null {
+  const parsed = parseTierStatements(params.message);
+  const normalizedMessage = params.message.toLowerCase();
+
+  const suggestions: Record<string, string[]> = {};
+
+  const explicitMentions = new Set<string>();
+
+  for (const tool of params.missingTools) {
+    const toolLower = tool.toLowerCase();
+    // Direct mention by tool name covers most cases (figma/notion/slack).
+    if (normalizedMessage.includes(toolLower)) {
+      explicitMentions.add(toolLower);
+    }
+  }
+
+  const resolveIntentForTool = (tool: string): TierIntent | null => {
+    const toolLower = tool.toLowerCase();
+
+    // Try exact tool name phrases in the tier statements first.
+    for (const [targetText, intent] of parsed.toolIntents.entries()) {
+      const targetLower = targetText.toLowerCase();
+      if (targetLower.includes(toolLower) || toolLower.includes(targetLower)) {
+        return intent;
+      }
+    }
+
+    // Heuristic: "top tier" without a "for ..." clause but tool mentioned.
+    if (explicitMentions.has(toolLower)) {
+      if (/\b(top|highest|enterprise)\b/.test(normalizedMessage)) return "top";
+      if (/\b(mid|middle)\b/.test(normalizedMessage)) return "mid";
+      if (/\b(low|entry|starter|bottom|lowest)\b/.test(normalizedMessage)) return "low";
+    }
+
+    return null;
+  };
+
+  const explicitTools = new Set<string>();
+  for (const tool of params.missingTools) {
+    const intent = resolveIntentForTool(tool);
+    if (!intent) continue;
+    const options = planOptionsForTool(tool);
+    const candidate = suggestionForIntent(options, intent);
+    if (candidate.length > 0) {
+      suggestions[tool] = candidate;
+      explicitTools.add(tool);
+    }
+  }
+
+  if (parsed.restIntent) {
+    for (const tool of params.missingTools) {
+      if (explicitTools.has(tool)) continue;
+      const options = planOptionsForTool(tool);
+      const candidate = suggestionForIntent(options, parsed.restIntent);
+      if (candidate.length > 0) {
+        suggestions[tool] = candidate;
+      }
+    }
+  }
+
+  return Object.keys(suggestions).length > 0 ? suggestions : null;
+}
+
 function parseApproxAnnualCost(text: string): number | null {
   const normalized = text.trim().toLowerCase();
   const match = normalized.match(/(\$?\s*)(\d[\d,]*)(\.\d+)?\s*([km])?/i);
@@ -426,6 +545,87 @@ export async function POST(request: NextRequest) {
 
     if (prisma && sessionId) {
       const { state, userId } = await loadIntakeState(sessionId);
+
+      if (state.stage === "confirm_plans") {
+        const normalized = userMessage.trim().toLowerCase();
+        const suggestions = state.planSuggestions ?? {};
+        const suggestionEntries = Object.entries(suggestions);
+
+        if (normalized === "correct" || normalized === "looks good" || normalized === "yes") {
+          const ambiguous = suggestionEntries.filter(([, options]) => options.length !== 1);
+          if (ambiguous.length > 0) {
+            const replyText = `Almost. I still need you to pick the exact plan for:\n${ambiguous
+              .map(([tool, options]) => `- ${tool}: ${options.join(" or ")}`)
+              .join("\n")}\n\nReply like: “Tool: Plan”.`;
+            await persistMessage({ sessionId, role: "assistant", content: replyText });
+            return NextResponse.json({ sessionId, onTopic: true, replyText });
+          }
+
+          const filled = state.lineItems.map((item) => {
+            const options = suggestions[item.tool];
+            if (!item.plan && options && options.length === 1) {
+              return { ...item, plan: options[0] };
+            }
+            return item;
+          });
+
+          const nextState: IntakeState = {
+            ...state,
+            lineItems: filled,
+            planSuggestions: {},
+            stage: "collect",
+          };
+          await persistIntakeState(sessionId, nextState);
+
+          const missingPrices = missingPriceTools(filled);
+          if (missingPrices.length > 0) {
+            const replyText = `Thanks. What do you pay per year for each of these?\n${missingPrices
+              .map((tool) => `- ${tool}`)
+              .join("\n")}\n\nYou can reply like: “Slack: $19k/yr, Notion: $4,200/yr”.`;
+            await persistMessage({ sessionId, role: "assistant", content: replyText });
+            return NextResponse.json({ sessionId, onTopic: true, replyText });
+          }
+
+          const replyText =
+            "Got it. Is that all the subscriptions you want to include, or do you want to add another? Reply “yes” to add more, or “no” if that’s all.";
+          await persistMessage({ sessionId, role: "assistant", content: replyText });
+          return NextResponse.json({ sessionId, onTopic: true, replyText });
+        }
+
+        // Try to match a single plan name to a single ambiguous tool.
+        const ambiguousTools = suggestionEntries.filter(([, options]) => options.length === 2);
+        if (ambiguousTools.length === 1) {
+          const [tool, options] = ambiguousTools[0];
+          const chosen = options.find((option) => option.toLowerCase() === normalized);
+          if (chosen) {
+            const filled = state.lineItems.map((item) =>
+              item.tool === tool ? { ...item, plan: chosen } : item
+            );
+            const nextState: IntakeState = {
+              ...state,
+              lineItems: filled,
+              planSuggestions: {},
+              stage: "collect",
+            };
+            await persistIntakeState(sessionId, nextState);
+
+            const missingPrices = missingPriceTools(filled);
+            const replyText =
+              missingPrices.length > 0
+                ? `Thanks. What do you pay per year for each of these?\n${missingPrices
+                    .map((t) => `- ${t}`)
+                    .join("\n")}\n\nYou can reply like: “Slack: $19k/yr, Notion: $4,200/yr”.`
+                : "Got it. Do you want to add another subscription, or is that all?";
+            await persistMessage({ sessionId, role: "assistant", content: replyText });
+            return NextResponse.json({ sessionId, onTopic: true, replyText });
+          }
+        }
+
+        const replyText =
+          "Reply “correct” to accept my plan guesses, or specify exact plans like: “Figma: Professional, Notion: Enterprise, Slack: Enterprise Grid”.";
+        await persistMessage({ sessionId, role: "assistant", content: replyText });
+        return NextResponse.json({ sessionId, onTopic: true, replyText });
+      }
 
       if (state.stage === "confirm_more") {
         if (isAffirmative(userMessage)) {
@@ -642,6 +842,33 @@ export async function POST(request: NextRequest) {
       if (missingPlans.length > 0) {
         nextState.stage = "collect";
         await persistIntakeState(sessionId, nextState);
+
+        if (extracted.lineItems.length === 0) {
+          const tierSuggestions = mapTierSuggestions({
+            message: userMessage,
+            missingTools: missingPlans,
+          });
+
+          if (tierSuggestions) {
+            const replyLines = Object.entries(tierSuggestions).map(([tool, options]) => {
+              if (options.length === 1) return `- ${tool}: ${options[0]}`;
+              return `- ${tool}: ${options[0]} or ${options[1]}`;
+            });
+
+            const replyText = `Based on what you said, here’s my best guess on plans. Reply “correct” to accept, or change any with “Tool: Plan”.\n${replyLines.join(
+              "\n"
+            )}`;
+
+            const nextConfirm: IntakeState = {
+              ...nextState,
+              planSuggestions: tierSuggestions,
+              stage: "confirm_plans",
+            };
+            await persistIntakeState(sessionId, nextConfirm);
+            await persistMessage({ sessionId, role: "assistant", content: replyText });
+            return NextResponse.json({ sessionId, onTopic: true, replyText });
+          }
+        }
 
         if (extracted.lineItems.length === 0 && isMidTierAllTools(userMessage)) {
           const lines = missingPlans.map((tool) => {

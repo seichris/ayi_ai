@@ -62,8 +62,16 @@ export const renewalAdviceSchema = z.object({
 
 export const intakeStateSchema = z.object({
   lineItems: z.array(lineItemSchema).default([]),
+  planSuggestions: z.record(z.string(), z.array(z.string()).max(2)).default({}),
   stage: z
-    .enum(["collect", "confirm_more", "prompt_signin", "ready", "briefed"])
+    .enum([
+      "collect",
+      "confirm_more",
+      "confirm_plans",
+      "prompt_signin",
+      "ready",
+      "briefed",
+    ])
     .default("collect"),
 });
 
