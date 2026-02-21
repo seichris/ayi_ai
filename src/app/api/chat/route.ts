@@ -286,6 +286,42 @@ function isNegative(text: string): boolean {
   );
 }
 
+function isMidTierAllTools(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return (
+    /\b(mid|middle)\b/.test(normalized) &&
+    /\btier\b/.test(normalized) &&
+    /\b(each|all|both|those|them)\b/.test(normalized) &&
+    !normalized.includes(":")
+  );
+}
+
+function looksLikeSinglePlanForAll(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (normalized.includes(":")) {
+    return false;
+  }
+  // Keep this conservative to avoid accidentally treating sentences as plan names.
+  return normalized.length > 0 && normalized.length <= 32 && /\b(each|all|both|those|them)\b/.test(normalized);
+}
+
+function middlePlanCandidates(plans: string[]): string[] {
+  if (plans.length === 0) {
+    return [];
+  }
+
+  if (plans.length <= 2) {
+    return plans.slice();
+  }
+
+  if (plans.length % 2 === 1) {
+    return [plans[Math.floor(plans.length / 2)]];
+  }
+
+  const upperMid = plans.length / 2;
+  return [plans[upperMid - 1], plans[upperMid]];
+}
+
 function parseApproxAnnualCost(text: string): number | null {
   const normalized = text.trim().toLowerCase();
   const match = normalized.match(/(\$?\s*)(\d[\d,]*)(\.\d+)?\s*([km])?/i);
@@ -606,6 +642,56 @@ export async function POST(request: NextRequest) {
       if (missingPlans.length > 0) {
         nextState.stage = "collect";
         await persistIntakeState(sessionId, nextState);
+
+        if (extracted.lineItems.length === 0 && isMidTierAllTools(userMessage)) {
+          const lines = missingPlans.map((tool) => {
+            const plans = planOptionsForTool(tool);
+            const candidates = middlePlanCandidates(plans);
+            if (candidates.length === 0) {
+              return `- ${tool}: reply with the exact plan name (Example: “${tool}: Professional”)`;
+            }
+            if (candidates.length === 1) {
+              return `- ${tool}: did you mean “${candidates[0]}”?`;
+            }
+            return `- ${tool}: did you mean “${candidates[0]}” or “${candidates[1]}”?`;
+          });
+
+          const replyText = `When you say “mid-tier”, which exact plan do you mean for each tool?\n${lines.join(
+            "\n"
+          )}\n\nReply like: “Figma: Professional, Notion: Business, Slack: Business+”.`;
+          await persistMessage({ sessionId, role: "assistant", content: replyText });
+          return NextResponse.json({ sessionId, onTopic: true, replyText });
+        }
+
+        if (extracted.lineItems.length === 0 && looksLikeSinglePlanForAll(userMessage)) {
+          const plan = userMessage.trim();
+          mergedItems = mergedItems.map((item) =>
+            missingPlans.includes(item.tool) ? { ...item, plan } : item
+          );
+          nextState.lineItems = mergedItems;
+          await persistIntakeState(sessionId, nextState);
+        }
+
+        const missingPlansAfterAutofill = missingPlanTools(mergedItems);
+        if (missingPlansAfterAutofill.length === 0) {
+          const missingPrices = missingPriceTools(mergedItems);
+
+          if (missingPrices.length > 0) {
+            const replyText = `Thanks. What do you pay per year for each of these?\n${missingPrices
+              .map((tool) => `- ${tool}`)
+              .join("\n")}\n\nYou can reply like: “Slack: $19k/yr, Notion: $4,200/yr”.`;
+            await persistMessage({ sessionId, role: "assistant", content: replyText });
+            return NextResponse.json({ sessionId, onTopic: true, replyText });
+          }
+
+          nextState.stage = "confirm_more";
+          await persistIntakeState(sessionId, nextState);
+
+          const replyText =
+            "Got it. Is that all the subscriptions you want to include, or do you want to add another? Reply “yes” to add more, or “no” if that’s all.";
+          await persistMessage({ sessionId, role: "assistant", content: replyText });
+          return NextResponse.json({ sessionId, onTopic: true, replyText });
+        }
 
         const lines = missingPlans.map((tool) => {
           const plans = planOptionsForTool(tool);

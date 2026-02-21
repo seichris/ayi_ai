@@ -15,12 +15,20 @@ export type SaaSBenchmark = {
 
 export const SAAS_BENCHMARKS: SaaSBenchmark[] = [
   {
-    tool: "Slack Business+",
+    tool: "Slack",
     aliases: ["slack", "slack business+", "slack business plus"],
     plans: ["Free", "Pro", "Business+", "Enterprise Grid"],
     marketAnnualPerSeatUsd: { min: 120, max: 210 },
     typicalDiscountPct: { min: 8, max: 24 },
     notes: "Volume and multi-year deals usually unlock better rates than list pricing.",
+  },
+  {
+    tool: "Figma",
+    aliases: ["figma"],
+    plans: ["Starter", "Professional", "Organization", "Enterprise"],
+    marketAnnualPerSeatUsd: { min: 150, max: 650 },
+    typicalDiscountPct: { min: 8, max: 25 },
+    notes: "Plan mix (design/dev) and seat commitments drive discounting more than list price.",
   },
   {
     tool: "Google Workspace",
