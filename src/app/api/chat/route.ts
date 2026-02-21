@@ -29,6 +29,8 @@ type PromptMessage = {
 
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
 const RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX_REQUESTS ?? 20);
+const RATE_LIMIT_ENABLED = process.env.RATE_LIMIT_ENABLED !== "false";
+const TOPIC_GUARDRAILS_ENABLED = process.env.TOPIC_GUARDRAILS_ENABLED !== "false";
 const OFF_TOPIC_MESSAGE =
   "Please stay on topic: share your SaaS tools, plans, seats, and annual pricing so I can help with renewal negotiation.";
 
@@ -551,21 +553,23 @@ const intakeExtractionSchema = z.object({
 
 export async function POST(request: NextRequest) {
   const ip = getClientIp(request);
-  const rateLimit = checkRateLimit(ip);
+  if (RATE_LIMIT_ENABLED) {
+    const rateLimit = checkRateLimit(ip);
 
-  if (rateLimit.limited) {
-    return NextResponse.json(
-      {
-        onTopic: false,
-        replyText: "Rate limit reached. Please try again shortly.",
-      },
-      {
-        status: 429,
-        headers: {
-          "Retry-After": String(rateLimit.retryAfterSeconds ?? 60),
+    if (rateLimit.limited) {
+      return NextResponse.json(
+        {
+          onTopic: false,
+          replyText: "Rate limit reached. Please try again shortly.",
         },
-      }
-    );
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(rateLimit.retryAfterSeconds ?? 60),
+          },
+        }
+      );
+    }
   }
 
   try {
@@ -589,48 +593,53 @@ export async function POST(request: NextRequest) {
       content: userMessage,
     });
 
-    const classification = await generateJson(classifierResultSchema, {
-      systemInstruction: CLASSIFIER_SYSTEM_PROMPT,
-      userPrompt: `Classify this user message:\n${userMessage}`,
-      temperature: 0,
-      maxOutputTokens: 512,
-      retries: 1,
-    });
+    const intake = prisma && sessionId ? await loadIntakeState(sessionId) : null;
+    const intakeState = intake?.state;
 
-    let isAllowed = classification.decision === "allowed";
-    console.info("chat.classification", {
-      ip,
-      sessionId,
-      decision: classification.decision,
-      reason: classification.reason,
-    });
-
-    if (!isAllowed) {
-      if (prisma && sessionId) {
-        const { state } = await loadIntakeState(sessionId);
-
-        const shouldBypassClassifier =
-          state.stage === "confirm_more" ||
-          state.stage === "confirm_plans" ||
-          state.stage === "prompt_signin" ||
-          (state.lineItems.length > 0 &&
+    const shouldBypassClassifier = Boolean(
+      intakeState &&
+        (intakeState.stage === "confirm_more" ||
+          intakeState.stage === "confirm_plans" ||
+          intakeState.stage === "prompt_signin" ||
+          (intakeState.lineItems.length > 0 &&
             (isAffirmative(userMessage) ||
               isNegative(userMessage) ||
               looksLikeListRequest(userMessage) ||
-              userMessage.trim().toLowerCase() === "correct"));
+              userMessage.trim().toLowerCase() === "correct")))
+    );
 
-        if (shouldBypassClassifier) {
-          isAllowed = true;
-          console.info("chat.classification_bypass", {
-            ip,
-            sessionId,
-            stage: state.stage,
-            message: userMessage,
-          });
-        }
-      }
+    let isAllowed = true;
 
-      if (!isAllowed) {
+    if (!TOPIC_GUARDRAILS_ENABLED) {
+      isAllowed = true;
+      console.info("chat.classification_disabled", { ip, sessionId });
+    } else if (shouldBypassClassifier) {
+      isAllowed = true;
+      console.info("chat.classification_bypass", {
+        ip,
+        sessionId,
+        stage: intakeState?.stage,
+        message: userMessage,
+      });
+    } else {
+      const classification = await generateJson(classifierResultSchema, {
+        systemInstruction: CLASSIFIER_SYSTEM_PROMPT,
+        userPrompt: `Classify this user message:\n${userMessage}`,
+        temperature: 0,
+        maxOutputTokens: 512,
+        retries: 1,
+      });
+
+      isAllowed = classification.decision === "allowed";
+      console.info("chat.classification", {
+        ip,
+        sessionId,
+        decision: classification.decision,
+        reason: classification.reason,
+      });
+    }
+
+    if (!isAllowed) {
       await persistMessage({
         sessionId,
         role: "assistant",
@@ -642,11 +651,11 @@ export async function POST(request: NextRequest) {
         onTopic: false,
         replyText: OFF_TOPIC_MESSAGE,
       });
-      }
     }
 
     if (prisma && sessionId) {
-      const { state, userId } = await loadIntakeState(sessionId);
+      const resolvedIntake = intake ?? (await loadIntakeState(sessionId));
+      const { state, userId } = resolvedIntake;
 
       if (looksLikeListRequest(userMessage)) {
         const replyText = summarizeIntake(state.lineItems);

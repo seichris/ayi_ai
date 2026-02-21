@@ -144,10 +144,12 @@ We will separate identity from Gmail access.
 - `DATABASE_URL` (enables persistence)
 - `RATE_LIMIT_WINDOW_MS`
 - `RATE_LIMIT_MAX_REQUESTS`
+- `RATE_LIMIT_ENABLED` (set to `false` to disable)
 - `GOOGLE_OAUTH_CLIENT_ID`
 - `GOOGLE_OAUTH_CLIENT_SECRET`
 - `GOOGLE_OAUTH_REDIRECT_URL` (Google Sign-In callback URL)
 - `GOOGLE_GMAIL_OAUTH_REDIRECT_URL` (Gmail connect callback URL)
+- `TOPIC_GUARDRAILS_ENABLED` (set to `false` to disable on-topic classifier)
 
 ## Acceptance Criteria (MVP)
 
