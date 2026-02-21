@@ -35,7 +35,7 @@ AI chat app for startup and SMB SaaS renewal negotiation.
 ## Environment variables
 
 - `GOOGLE_AI_STUDIO_API_KEY`: required API key.
-- `GEMINI_MODEL`: Gemini model name (`gemini-flash-3` by default).
+- `GEMINI_MODEL`: Gemini model name (`gemini-3-flash-preview` by default, with automatic fallback to this model on 404).
 - `RATE_LIMIT_WINDOW_MS`: rate-limit window in milliseconds.
 - `RATE_LIMIT_MAX_REQUESTS`: max requests per IP in window.
 - `DATABASE_URL`: Postgres connection string for chat session persistence.

@@ -1,5 +1,7 @@
 import { z, ZodType } from "zod";
 
+const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";
+
 type GenerateJsonOptions = {
   systemInstruction: string;
   userPrompt: string;
@@ -17,6 +19,17 @@ type GeminiResponse = {
     };
   }>;
 };
+
+class GeminiRequestError extends Error {
+  readonly status: number;
+  readonly model: string;
+
+  constructor(model: string, status: number, body: string) {
+    super(`Gemini request failed (${status}) for model "${model}": ${body}`);
+    this.status = status;
+    this.model = model;
+  }
+}
 
 function extractJsonText(rawText: string): string {
   const trimmed = rawText.trim();
@@ -87,7 +100,7 @@ async function invokeGemini(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Gemini request failed (${response.status}): ${text}`);
+    throw new GeminiRequestError(model, response.status, text);
   }
 
   const data = (await response.json()) as GeminiResponse;
@@ -110,19 +123,54 @@ export async function generateJson<T>(
     throw new Error("GOOGLE_AI_STUDIO_API_KEY is not set.");
   }
 
-  const model = process.env.GEMINI_MODEL ?? "gemini-flash-3";
+  const configuredModel = process.env.GEMINI_MODEL?.trim();
+  const models = configuredModel
+    ? Array.from(new Set([configuredModel, DEFAULT_GEMINI_MODEL]))
+    : [DEFAULT_GEMINI_MODEL];
   const retries = options.retries ?? 1;
 
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      const text = await invokeGemini(model, apiKey, options, attempt > 0);
-      const jsonText = extractJsonText(text);
-      const parsed = JSON.parse(jsonText);
-      return schema.parse(parsed);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+    const model = models[modelIndex];
+
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const text = await invokeGemini(model, apiKey, options, attempt > 0);
+        const jsonText = extractJsonText(text);
+        const parsed = JSON.parse(jsonText);
+        return schema.parse(parsed);
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (lastError instanceof GeminiRequestError && lastError.status === 404) {
+          break;
+        }
+      }
+    }
+
+    const isModelNotFound =
+      lastError instanceof GeminiRequestError && lastError.status === 404;
+    const hasNextModel = modelIndex < models.length - 1;
+
+    if (
+      configuredModel &&
+      model === configuredModel &&
+      isModelNotFound &&
+      configuredModel !== DEFAULT_GEMINI_MODEL
+    ) {
+      console.warn("gemini.model_fallback", {
+        from: configuredModel,
+        to: DEFAULT_GEMINI_MODEL,
+      });
+    }
+
+    if (isModelNotFound && hasNextModel) {
+      continue;
+    }
+
+    if (lastError) {
+      throw lastError;
     }
   }
 
