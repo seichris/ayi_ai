@@ -62,6 +62,14 @@ export const SAAS_BENCHMARKS: SaaSBenchmark[] = [
     notes: "Consolidated workspace counts and committed seat floors drive concessions.",
   },
   {
+    tool: "GitHub",
+    aliases: ["github", "git hub"],
+    plans: ["Free", "Team", "Enterprise"],
+    marketAnnualPerSeatUsd: { min: 40, max: 200 },
+    typicalDiscountPct: { min: 5, max: 18 },
+    notes: "Seat counts, enterprise security features, and multi-year terms drive discounts.",
+  },
+  {
     tool: "Zoom",
     aliases: ["zoom", "zoom workplace"],
     plans: ["Basic", "Pro", "Business", "Business Plus", "Enterprise"],

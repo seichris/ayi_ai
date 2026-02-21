@@ -31,6 +31,7 @@ const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
 const RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX_REQUESTS ?? 20);
 const RATE_LIMIT_ENABLED = process.env.RATE_LIMIT_ENABLED !== "false";
 const TOPIC_GUARDRAILS_ENABLED = process.env.TOPIC_GUARDRAILS_ENABLED !== "false";
+const DEMO_MODE_ENABLED = process.env.DEMO_MODE_ENABLED === "true";
 const OFF_TOPIC_MESSAGE =
   "Please stay on topic: share your SaaS tools, plans, seats, and annual pricing so I can help with renewal negotiation.";
 
@@ -609,6 +610,47 @@ const intakeExtractionSchema = z.object({
   lineItems: z.array(lineItemSchema).max(12),
 });
 
+function demoLineItems(): IntakeState["lineItems"] {
+  return [
+    {
+      tool: "Figma",
+      plan: "Professional",
+      seats: 20,
+      annualCost: 14_000,
+      currency: "USD",
+      term: "annual",
+      notes: "Demo: assume current spend slightly above fair market.",
+    },
+    {
+      tool: "Notion",
+      plan: "Business",
+      seats: 20,
+      annualCost: 5_200,
+      currency: "USD",
+      term: "annual",
+      notes: "Demo: assume current spend slightly above fair market.",
+    },
+    {
+      tool: "Slack",
+      plan: "Business+",
+      seats: 20,
+      annualCost: 6_200,
+      currency: "USD",
+      term: "annual",
+      notes: "Demo: assume current spend slightly above fair market.",
+    },
+    {
+      tool: "GitHub",
+      plan: "Team",
+      seats: 20,
+      annualCost: 5_800,
+      currency: "USD",
+      term: "annual",
+      notes: "Demo: assume current spend slightly above fair market.",
+    },
+  ];
+}
+
 export async function POST(request: NextRequest) {
   const ip = getClientIp(request);
   if (RATE_LIMIT_ENABLED) {
@@ -650,6 +692,70 @@ export async function POST(request: NextRequest) {
       role: "user",
       content: userMessage,
     });
+
+    if (DEMO_MODE_ENABLED) {
+      const demoItems = demoLineItems();
+      const itemsText = demoItems
+        .map((item) => {
+          const parts = [
+            `tool=${item.tool}`,
+            item.plan ? `plan=${item.plan}` : null,
+            typeof item.seats === "number" ? `seats=${item.seats}` : null,
+            typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
+            typeof item.annualCostPerSeat === "number"
+              ? `annualCostPerSeat=${item.annualCostPerSeat}`
+              : null,
+            item.term ? `term=${item.term}` : null,
+          ].filter(Boolean);
+          return `- ${parts.join(", ")}`;
+        })
+        .join("\n");
+
+      const benchmarkText = benchmarkContext(
+        demoItems.map((item) => item.tool).join(", ")
+      );
+
+      const guidance = await generateJson(renewalAdviceSchema, {
+        systemInstruction: ADVISOR_SYSTEM_PROMPT,
+        userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nSubscriptions:\n${itemsText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
+        temperature: 0,
+        maxOutputTokens: 4096,
+        retries: 1,
+      });
+
+      const assistantReply = "Here is your SaaS renewal negotiation brief.";
+
+      await persistMessage({
+        sessionId,
+        role: "assistant",
+        content: assistantReply,
+        analysis: guidance,
+      });
+
+      if (prisma && sessionId) {
+        const intakeState: IntakeState = {
+          lineItems: demoItems,
+          planSuggestions: {},
+          stage: "briefed",
+        };
+        await persistIntakeState(sessionId, intakeState);
+      }
+
+      const action =
+        prisma && sessionId
+          ? (await loadIntakeState(sessionId)).userId
+            ? ({ type: "google_connect_gmail" } as const)
+            : ({ type: "google_signin" } as const)
+          : ({ type: "google_signin" } as const);
+
+      return NextResponse.json({
+        sessionId,
+        onTopic: true,
+        replyText: assistantReply,
+        analysis: guidance,
+        actions: [action],
+      });
+    }
 
     const intake = prisma && sessionId ? await loadIntakeState(sessionId) : null;
     const intakeState = intake?.state;
