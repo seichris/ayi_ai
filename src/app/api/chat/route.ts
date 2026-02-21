@@ -402,6 +402,20 @@ function middlePlanCandidates(plans: string[]): string[] {
   return [plans[upperMid - 1], plans[upperMid]];
 }
 
+function buildAdvisorErrorReply(items: IntakeState["lineItems"], errorMessage: string): string {
+  const normalized = errorMessage.toLowerCase();
+
+  if (normalized.includes("timeout") || normalized.includes("aborted")) {
+    return "I hit a timeout while generating the brief. Reply “try again” to rerun, or try again in a minute. (If you’re self-hosting, increase `GEMINI_TIMEOUT_MS`.)";
+  }
+
+  if (normalized.includes("google_ai_studio_api_key is not set")) {
+    return "I can’t reach the pricing model right now because `GOOGLE_AI_STUDIO_API_KEY` isn’t set on the server.";
+  }
+
+  return buildAdvisorFailureReply(items);
+}
+
 type TierIntent = "low" | "mid" | "top";
 
 function parseTierStatements(text: string): { toolIntents: Map<string, TierIntent>; restIntent?: TierIntent } {
@@ -983,10 +997,10 @@ export async function POST(request: NextRequest) {
 	              maxOutputTokens: 4096,
 	              retries: 1,
 	            });
-	          } catch (advisorError) {
-	            const message =
-	              advisorError instanceof Error ? advisorError.message : String(advisorError);
-	            const fallbackReply = buildAdvisorFailureReply(nextState.lineItems);
+		          } catch (advisorError) {
+		            const message =
+		              advisorError instanceof Error ? advisorError.message : String(advisorError);
+		            const fallbackReply = buildAdvisorErrorReply(nextState.lineItems, message);
 
             console.error("chat.advisor_error", {
               ip,
@@ -1079,7 +1093,7 @@ export async function POST(request: NextRequest) {
 	        } catch (advisorError) {
 	          const message =
 	            advisorError instanceof Error ? advisorError.message : String(advisorError);
-	          const fallbackReply = buildAdvisorFailureReply(state.lineItems);
+	          const fallbackReply = buildAdvisorErrorReply(state.lineItems, message);
 
           console.error("chat.advisor_error", {
             ip,
@@ -1144,12 +1158,41 @@ export async function POST(request: NextRequest) {
         extracted = { lineItems: [] as IntakeState["lineItems"] };
       }
 
-      const extractedItems = (extracted.lineItems ?? []).filter((item) => {
-        const tool = item.tool.trim().toLowerCase();
-        if (tool.length === 0) return false;
-        if (tool === "unknown" || tool === "n/a" || tool === "na" || tool === "none") return false;
-        return true;
-      });
+      const messageHasMoneySignal =
+        /(\$|usd|dollar|per\s*(year|yr)|\/\s*(year|yr)|annual)/i.test(userMessage);
+      const messageHasSeatSignal = /\b(seat|seats|people|users)\b/i.test(userMessage);
+      const messageHasPerSeatSignal = /(\bper\s*seat\b|\/\s*seat\b)/i.test(userMessage);
+
+      const extractedItems = (extracted.lineItems ?? [])
+        .map((item) => {
+          const sanitized = { ...item };
+
+          // The extractor occasionally mis-assigns "20 seats/people" as an annual cost.
+          // Only accept pricing fields when the user message contains clear money signals.
+          if (!messageHasMoneySignal) {
+            delete sanitized.annualCost;
+            delete sanitized.annualCostPerSeat;
+          } else if (!messageHasPerSeatSignal) {
+            // If the user didn't mention per-seat pricing, drop per-seat to avoid confusion.
+            delete sanitized.annualCostPerSeat;
+          }
+
+          // If the message mentions seats/people but not money and we got an annualCost,
+          // prefer treating it as missing pricing and ask explicitly later.
+          if (messageHasSeatSignal && !messageHasMoneySignal) {
+            delete sanitized.annualCost;
+            delete sanitized.annualCostPerSeat;
+          }
+
+          return sanitized;
+        })
+        .filter((item) => {
+          const tool = item.tool.trim().toLowerCase();
+          if (tool.length === 0) return false;
+          if (tool === "unknown" || tool === "n/a" || tool === "na" || tool === "none")
+            return false;
+          return true;
+        });
 
       let mergedItems = mergeLineItems(state.lineItems, extractedItems);
       const nextState: IntakeState = { ...state, lineItems: mergedItems };
@@ -1347,7 +1390,7 @@ export async function POST(request: NextRequest) {
 	        advisorError instanceof Error
 	          ? advisorError.message
 	          : String(advisorError);
-	      const fallbackReply = buildAdvisorFailureReply([]);
+	      const fallbackReply = buildAdvisorErrorReply([], message);
 
       console.error("chat.advisor_error", {
         ip,

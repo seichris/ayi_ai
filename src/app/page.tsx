@@ -76,6 +76,7 @@ export default function Home() {
   const [authMe, setAuthMe] = useState<AuthMeResponse>({ user: null, gmailConnected: false });
   const [authLoading, setAuthLoading] = useState(true);
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
+  const [isAccountPanelOpen, setIsAccountPanelOpen] = useState(false);
 
   const canSubmit = inputValue.trim().length > 0 && !isSubmitting;
 
@@ -311,6 +312,7 @@ export default function Home() {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
       setAuthMe({ user: null, gmailConnected: false });
+      setIsAccountPanelOpen(false);
     }
   }
 
@@ -357,15 +359,28 @@ export default function Home() {
     }
   }
 
-	  return (
-	    <main className="min-h-screen bg-[radial-gradient(circle_at_16%_22%,#d5f4f6_0%,transparent_38%),radial-gradient(circle_at_86%_16%,#fae9bf_0%,transparent_34%),linear-gradient(160deg,#f9fcff_0%,#fefaf2_100%)] px-4 py-8 text-zinc-900 md:px-8">
-	      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-	        {!authLoading && authMe.user && (
-	          <div className="flex items-center justify-between rounded-3xl border border-zinc-200/70 bg-white/70 px-5 py-3 text-sm shadow-sm backdrop-blur">
-	            <div className="flex items-center gap-2 text-zinc-600">
-	              <span className="font-medium text-zinc-800">Account</span>
-	              <span>
-	                {authMe.user.name ? `${authMe.user.name} · ` : ""}
+  return (
+    <main className="min-h-screen bg-[radial-gradient(circle_at_16%_22%,#d5f4f6_0%,transparent_38%),radial-gradient(circle_at_86%_16%,#fae9bf_0%,transparent_34%),linear-gradient(160deg,#f9fcff_0%,#fefaf2_100%)] px-4 py-8 text-zinc-900 md:px-8">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+        {!authLoading && authMe.user && (
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setIsAccountPanelOpen((current) => !current)}
+            >
+              {isAccountPanelOpen ? "Hide account" : "Account"}
+            </Button>
+          </div>
+        )}
+
+        {!authLoading && authMe.user && isAccountPanelOpen && (
+          <div className="flex items-center justify-between rounded-3xl border border-zinc-200/70 bg-white/70 px-5 py-3 text-sm shadow-sm backdrop-blur">
+            <div className="flex items-center gap-2 text-zinc-600">
+              <span className="font-medium text-zinc-800">Account</span>
+              <span>
+                {authMe.user.name ? `${authMe.user.name} · ` : ""}
 	                {authMe.user.email}
 	              </span>
 	            </div>
