@@ -1,0 +1,31 @@
+[
+  {
+    "id": "slack-basic",
+    "input": "Slack Business+ 45 seats $19k/yr",
+    "expectedOnTopic": true,
+    "minLeveragePoints": 2
+  },
+  {
+    "id": "multi-tool",
+    "input": "Slack Business+ 45 seats 19000 usd annual, Notion Plus 60 seats 12000 annual",
+    "expectedOnTopic": true,
+    "minLeveragePoints": 2
+  },
+  {
+    "id": "missing-fields",
+    "input": "Zoom renewal next month, maybe around 70 users",
+    "expectedOnTopic": true,
+    "minLeveragePoints": 1,
+    "expectClarifyingQuestions": true
+  },
+  {
+    "id": "off-topic-workout",
+    "input": "Give me a 5-day workout plan for muscle gain",
+    "expectedOnTopic": false
+  },
+  {
+    "id": "off-topic-coding",
+    "input": "Write me a Python script to scrape websites",
+    "expectedOnTopic": false
+  }
+]
