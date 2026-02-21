@@ -60,11 +60,24 @@ export const renewalAdviceSchema = z.object({
   confidence: z.enum(["low", "medium", "high"]),
 });
 
+export const intakeStateSchema = z.object({
+  lineItems: z.array(lineItemSchema).default([]),
+  stage: z
+    .enum(["collect", "confirm_more", "prompt_signin", "ready", "briefed"])
+    .default("collect"),
+});
+
+export const chatActionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("google_signin") }),
+  z.object({ type: z.literal("google_connect_gmail") }),
+]);
+
 export const chatApiResponseSchema = z.object({
   sessionId: z.string().min(1).optional(),
   onTopic: z.boolean(),
   replyText: z.string().min(1),
   analysis: renewalAdviceSchema.optional(),
+  actions: z.array(chatActionSchema).optional(),
 });
 
 export const chatSessionHistoryResponseSchema = z.object({
@@ -88,3 +101,4 @@ export type ChatApiResponse = z.infer<typeof chatApiResponseSchema>;
 export type ChatSessionHistoryResponse = z.infer<
   typeof chatSessionHistoryResponseSchema
 >;
+export type IntakeState = z.infer<typeof intakeStateSchema>;

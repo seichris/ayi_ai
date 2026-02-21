@@ -1,5 +1,7 @@
 # SaaS Renewal AI Chat App - Implementation Plan
 
+Last updated: 2026-02-21
+
 ## Goals
 
 - Ship an MVP web app that takes a user’s SaaS renewal details and returns:
@@ -16,6 +18,7 @@
 - Tailwind CSS + shadcn/ui
 - AI provider: Gemini via Google AI Studio API key
 - Default model target: Gemini Flash 3 (configurable through env)
+- Persistence: Prisma + Postgres (optional; enabled when `DATABASE_URL` is set)
 
 ## MVP Scope
 
@@ -32,75 +35,27 @@
   - ready-to-copy counter-email
   - clarifying questions when details are missing
 
-## Architecture
+## Current State (Implemented)
 
-### Frontend
+- Chat UI returns structured pricing + negotiation output (market range, savings estimate, leverage points, counter email).
+- Backend uses a two-step LLM flow (on-topic classifier then advisor) and validates JSON with Zod.
+- Seeded benchmark dataset is used as directional context.
+- Rate limiting is in place (IP-based in-memory).
+- Optional persistence stores chat sessions/messages when `DATABASE_URL` is set.
+- Google Sign-In endpoints are in place (`/api/auth/google/*`) and Gmail connect/send plumbing exists (`/api/auth/gmail/*`, `/api/gmail/send`).
 
-- `app/page.tsx` renders a one-page chat experience.
-- Use shadcn/ui primitives for input, button, card, and textarea.
-- Render assistant output in structured cards rather than raw long-form text.
+## Data, Privacy, and Abuse Control (MVP)
 
-### Backend
-
-- `POST /api/chat` endpoint accepts chat history and latest user message.
-- Server calls Gemini with strict system/developer instructions.
-- Server enforces a JSON schema response with Zod before returning data.
-- UI only renders validated structured data.
-
-### On-topic guardrails
-
-- Two-step LLM flow:
-  1. Classifier prompt returns `allowed` or `disallowed` with a short reason.
-  2. If disallowed, return a fixed response: stay focused on SaaS pricing/renewals.
-  3. If allowed, run the main pricing and negotiation prompt.
-- Prevent instruction override by keeping behavior in system prompt and never executing user-provided directives.
-
-## Prompt and Output Contract
-
-- Require JSON-only response for both classifier and main responder.
-- Main response shape:
-  - `line_items`
-  - `market_range`
-  - `savings_estimate`
-  - `leverage_points`
-  - `counter_email`
-  - `clarifying_questions`
-  - `assumptions`
-  - `confidence`
-- Retry once on parse failure, then return a safe fallback error.
-
-## Pricing Intelligence Approach (MVP)
-
-- Extract normalized line items from free-form user text.
-- Combine:
-  - seeded benchmark dataset for top SaaS tools
-  - model reasoning for interpolation when data is incomplete
-- Always return assumptions and confidence level.
-- Compute savings range from current price when available; otherwise return typical discount band.
-
-## Data, Privacy, and Abuse Control
-
-- MVP is stateless by default.
-- Add lightweight rate limiting per IP.
+- Default to least data: only store what’s needed to provide the service.
+- Persistence is optional and gated by `DATABASE_URL`.
 - Log only minimal operational telemetry (latency, parse success, classification result).
 - Keep secrets in environment variables.
 
-## Delivery Phases
+## Phase 2 - Credibility and Quality (Next)
 
-### Phase 1 - MVP build (implement now)
-
-1. Initialize Next.js + TypeScript + Tailwind + shadcn/ui.
-2. Build single-page chat UI.
-3. Add `/api/chat` Gemini integration with two-step classification and structured response.
-4. Add a seeded benchmark JSON dataset for common tools.
-5. Add response cards + copy-to-clipboard for email draft.
-6. Add basic rate limiting and operational logs.
-
-### Phase 2 - credibility and quality (next)
-
-1. Expand benchmark coverage and update workflow.
-2. Add better clarifying-question loops.
-3. Add export/share features once persistence is introduced.
+1. Expand benchmark coverage and add a lightweight update workflow.
+2. Improve clarifying-question loops (ask until enough pricing inputs exist).
+3. Add export/share once persistence is enabled for a user.
 
 ## "Auto-Negotiation Agent" (Later)
 
@@ -110,33 +65,89 @@
 - Track lifecycle states from draft to resolution.
 - Propose and execute next best response with user oversight.
 
-### Architecture
+### Product UX: Manual vs Connected Email
 
-- Add authentication and user identity.
-- Connect outbound channels (Gmail/Microsoft or managed email service).
-- Use background jobs/queue for async workflows.
-- Ingest replies via webhook or polling.
-- Maintain audit logs for all agent actions.
+- Default: user copies the drafted email and sends it themselves (no Gmail access required).
+- Optional: user connects Gmail so the product can create drafts and/or send emails on their behalf.
+- Suggested journey:
+  - Start unauthenticated (fastest time-to-value).
+  - Prompt for Google Sign-In when the user wants to save/export a renewal bundle.
+  - Prompt for "Connect Gmail" only when the user chooses “draft/send for me”.
 
-### Safety and controls
+### Architecture: Two OAuth Flows (Recommended)
 
-- Require human approval before initial send (and optionally every send).
-- Restrict destinations with per-customer allowlists.
-- Escalate to user when legal/procurement/security terms appear.
-- Add clear pause/cancel/manual-takeover controls.
+We will separate identity from Gmail access.
 
-### Rollout order
+- Flow 1: Google Sign-In (identity only)
+  - Purpose: map subscription data + sessions to the user account.
+  - Scopes: `openid email profile`.
+  - Store: Google stable user id (`sub`) and the email used to sign in.
+- Flow 2: "Connect Gmail" (incremental authorization)
+  - Purpose: draft/send emails in the user’s name (and later: read replies, if we add it).
+  - Request only the scopes needed for the feature.
+  - Prefer incremental auth so users who only want “copy/paste” never see Gmail scopes.
+  - Request offline access (refresh token) so the agent can work across days.
+- Authorization records to persist: who authorized (user id / admin id), when, which scopes, and disconnect/revocation status.
 
-1. Start with human-in-the-loop draft and send.
-2. Add monitoring and suggested replies.
-3. Gradually allow constrained automation after reliability checks.
+### Gmail Scope Strategy (Least Privilege)
+
+- Start with send-only or draft-first.
+  - For “send for me”: use `gmail.send`.
+  - For “create draft for me”: use a compose/draft-capable scope (avoid read scopes at first).
+- Defer “monitor inbox / receive replies” until later.
+  - Reply handling typically requires read scopes (`gmail.readonly`) and/or modify scopes (`gmail.modify`).
+  - There is no fine-grained “only these recipients/threads” enforcement built into Gmail OAuth; scopes are the boundary.
+
+### What OAuth Does and Does Not Guarantee
+
+- OAuth scopes limit which Google APIs/features the token can call.
+- If we have a token with a Gmail read scope, our backend can technically read whatever that scope allows.
+- So the guarantee is primarily: least-privilege scopes + strong internal controls (policy checks, approvals, and audit logs).
+
+### Safety and Controls
+
+- Require human approval before the first send, and optionally before every send.
+- Restrict destinations with per-customer allowlists (domains and/or specific vendor addresses).
+- Enforce “agent can only send what it shows the user” (exact message hash in approval screen).
+- Pause/cancel/manual-takeover controls for any thread.
+- Maintain audit logs for all agent actions (draft created, message sent, thread read, labels applied).
+
+### Enterprise Option (Future): Google Workspace Admin Delegation
+
+- For Workspace customers, optionally support service accounts with domain-wide delegation so an admin can approve once per domain.
+- Treat this as an enterprise feature with stricter security/compliance posture.
+
+### Compliance Notes (Plan For It Early)
+
+- Gmail scopes may trigger Google OAuth verification and “sensitive/restricted scope” requirements (privacy policy, justification, potential security assessment).
+- Design the UI to clearly disclose what access is requested and why, with a one-click disconnect/revoke.
+
+### Implementation Notes (Agent)
+
+- Add user accounts via Google Sign-In (OpenID Connect).
+- Store Gmail refresh tokens encrypted at rest; rotate/revoke on disconnect.
+- Use background jobs/queue for async workflows (follow-ups, reminders, polling).
+- Ingest replies via Gmail API (polling initially; evaluate push notifications later).
+- Keep an internal state machine per vendor thread (drafted, approved, sent, replied, escalated, closed).
+
+### Rollout Order
+
+1. Manual send (copy-to-clipboard) plus optional Google Sign-In.
+2. Connect Gmail for “draft creation” and/or “send” with per-send approval.
+3. Add reply monitoring + suggested replies (read scopes), still with human approval.
+4. Gradually allow constrained automation after reliability checks.
 
 ## Environment Variables
 
 - `GOOGLE_AI_STUDIO_API_KEY`
 - `GEMINI_MODEL` (default to Gemini Flash variant)
+- `DATABASE_URL` (enables persistence)
 - `RATE_LIMIT_WINDOW_MS`
 - `RATE_LIMIT_MAX_REQUESTS`
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_OAUTH_REDIRECT_URL` (Google Sign-In callback URL)
+- `GOOGLE_GMAIL_OAUTH_REDIRECT_URL` (Gmail connect callback URL)
 
 ## Acceptance Criteria (MVP)
 
