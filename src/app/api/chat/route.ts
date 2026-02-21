@@ -5,6 +5,7 @@ import {
   chatTurnRequestSchema,
   classifierResultSchema,
   renewalAdviceSchema,
+  type RenewalAdvice,
 } from "@/lib/contracts";
 import { benchmarkContext } from "@/lib/benchmarks";
 import { prisma } from "@/lib/db";
@@ -206,7 +207,7 @@ export async function POST(request: NextRequest) {
       systemInstruction: CLASSIFIER_SYSTEM_PROMPT,
       userPrompt: `Classify this user message:\n${userMessage}`,
       temperature: 0,
-      maxOutputTokens: 120,
+      maxOutputTokens: 512,
       retries: 1,
     });
 
@@ -238,49 +239,42 @@ export async function POST(request: NextRequest) {
 
     const benchmarkText = benchmarkContext(userMessage);
 
-    const guidance = await generateJson(renewalAdviceSchema, {
-      systemInstruction: ADVISOR_SYSTEM_PROMPT,
-      userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nConversation:\n${conversationText}\n\nReturn JSON with this schema and field names exactly:\n{
-  "onTopic": true,
-  "lineItems": [
-    {
-      "tool": "string",
-      "plan": "string (optional)",
-      "seats": "number (optional)",
-      "annualCost": "number (optional)",
-      "currency": "string",
-      "term": "string (optional)",
-      "notes": "string (optional)"
+    let guidance: RenewalAdvice;
+
+    try {
+      guidance = await generateJson(renewalAdviceSchema, {
+        systemInstruction: ADVISOR_SYSTEM_PROMPT,
+        userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nConversation:\n${conversationText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
+        temperature: 0,
+        maxOutputTokens: 4096,
+        retries: 0,
+      });
+    } catch (advisorError) {
+      const message =
+        advisorError instanceof Error
+          ? advisorError.message
+          : String(advisorError);
+      const fallbackReply =
+        "I can help with this renewal, but I could not format the full brief yet. Please add annual price and contract term per tool, then retry.";
+
+      console.error("chat.advisor_error", {
+        ip,
+        sessionId,
+        message,
+      });
+
+      await persistMessage({
+        sessionId,
+        role: "assistant",
+        content: fallbackReply,
+      });
+
+      return NextResponse.json({
+        sessionId,
+        onTopic: true,
+        replyText: fallbackReply,
+      });
     }
-  ],
-  "marketRange": {
-    "min": "number",
-    "max": "number",
-    "currency": "string",
-    "basis": "string",
-    "confidence": "low|medium|high"
-  },
-  "savingsEstimate": {
-    "percentMin": "number",
-    "percentMax": "number",
-    "amountMin": "number (optional)",
-    "amountMax": "number (optional)",
-    "currency": "string",
-    "explanation": "string"
-  },
-  "leveragePoints": ["string"],
-  "counterEmail": {
-    "subject": "string",
-    "body": "string"
-  },
-  "clarifyingQuestions": ["string"],
-  "assumptions": ["string"],
-  "confidence": "low|medium|high"
-}\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If missing data, include clarifying questions and keep confidence lower.`,
-      temperature: 0,
-      maxOutputTokens: 2200,
-      retries: 1,
-    });
 
     const assistantReply = "Here is your SaaS renewal negotiation brief.";
 

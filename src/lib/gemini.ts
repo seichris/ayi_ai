@@ -1,6 +1,8 @@
+import { jsonrepair } from "jsonrepair";
 import { z, ZodType } from "zod";
 
 const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS ?? 12_000);
 
 type GenerateJsonOptions = {
   systemInstruction: string;
@@ -33,15 +35,27 @@ class GeminiRequestError extends Error {
 
 function parseStructuredJson<T>(schema: ZodType<T>, text: string): T {
   const jsonText = extractJsonText(text);
-  const parsed = JSON.parse(jsonText);
-  return schema.parse(parsed);
+
+  try {
+    const parsed = JSON.parse(jsonText);
+    return schema.parse(parsed);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      const repairedText = jsonrepair(jsonText);
+      const parsed = JSON.parse(repairedText);
+      return schema.parse(parsed);
+    }
+
+    throw error;
+  }
 }
 
 async function repairJsonOutput(
   model: string,
   apiKey: string,
   options: GenerateJsonOptions,
-  rawOutput: string
+  rawOutput: string,
+  responseSchema: Record<string, unknown>
 ): Promise<string> {
   return invokeGemini(
     model,
@@ -54,8 +68,85 @@ async function repairJsonOutput(
       maxOutputTokens: options.maxOutputTokens ?? 2200,
       retries: 0,
     },
-    true
+    true,
+    responseSchema
   );
+}
+
+function buildGeminiResponseSchema<T>(
+  schema: ZodType<T>
+): Record<string, unknown> {
+  const jsonSchema = z.toJSONSchema(schema) as Record<string, unknown>;
+  const allowedSchemaKeys = new Set([
+    "type",
+    "format",
+    "description",
+    "nullable",
+    "enum",
+    "items",
+    "maxItems",
+    "minItems",
+    "properties",
+    "required",
+    "propertyOrdering",
+    "anyOf",
+  ]);
+
+  const sanitize = (
+    value: unknown,
+    context: "schema" | "propertiesMap" = "schema"
+  ): unknown => {
+    if (Array.isArray(value)) {
+      return value.map((item) => sanitize(item, context));
+    }
+
+    if (!value || typeof value !== "object") {
+      return value;
+    }
+
+    if (context === "propertiesMap") {
+      const mapped: Record<string, unknown> = {};
+      for (const [propertyName, propertySchema] of Object.entries(value)) {
+        mapped[propertyName] = sanitize(propertySchema, "schema");
+      }
+      return mapped;
+    }
+
+    const schemaNode = value as Record<string, unknown>;
+    const constValue = schemaNode.const;
+
+    const result: Record<string, unknown> = {};
+
+    if (constValue !== undefined && schemaNode.enum === undefined) {
+      if (typeof constValue === "string") {
+        result.enum = [constValue];
+      } else if (schemaNode.type === undefined) {
+        result.type = typeof constValue;
+      }
+    }
+
+    for (const [key, child] of Object.entries(schemaNode)) {
+      if (
+        key === "$schema" ||
+        key === "additionalProperties" ||
+        key === "const" ||
+        !allowedSchemaKeys.has(key)
+      ) {
+        continue;
+      }
+
+      if (key === "properties") {
+        result[key] = sanitize(child, "propertiesMap");
+        continue;
+      }
+
+      result[key] = sanitize(child, "schema");
+    }
+
+    return result;
+  };
+
+  return sanitize(jsonSchema) as Record<string, unknown>;
 }
 
 function extractJsonText(rawText: string): string {
@@ -89,12 +180,23 @@ async function invokeGemini(
   model: string,
   apiKey: string,
   options: GenerateJsonOptions,
-  forceStrictJson = false
+  forceStrictJson = false,
+  responseSchema?: Record<string, unknown>
 ): Promise<string> {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
 
   const strictPromptSuffix =
     "Return only a valid JSON object. Do not include markdown fences or commentary.";
+
+  const generationConfig: Record<string, unknown> = {
+    temperature: options.temperature ?? 0.2,
+    maxOutputTokens: options.maxOutputTokens ?? 2200,
+    responseMimeType: "application/json",
+  };
+
+  if (responseSchema) {
+    generationConfig.responseSchema = responseSchema;
+  }
 
   const response = await fetch(endpoint, {
     method: "POST",
@@ -117,12 +219,9 @@ async function invokeGemini(
           ],
         },
       ],
-      generationConfig: {
-        temperature: options.temperature ?? 0.2,
-        maxOutputTokens: options.maxOutputTokens ?? 2200,
-        responseMimeType: "application/json",
-      },
+      generationConfig,
     }),
+    signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -151,6 +250,7 @@ export async function generateJson<T>(
   }
 
   const configuredModel = process.env.GEMINI_MODEL?.trim();
+  const responseSchema = buildGeminiResponseSchema(schema);
   const models = configuredModel
     ? Array.from(new Set([configuredModel, DEFAULT_GEMINI_MODEL]))
     : [DEFAULT_GEMINI_MODEL];
@@ -165,7 +265,13 @@ export async function generateJson<T>(
       let responseText: string | null = null;
 
       try {
-        responseText = await invokeGemini(model, apiKey, options, attempt > 0);
+        responseText = await invokeGemini(
+          model,
+          apiKey,
+          options,
+          attempt > 0,
+          responseSchema
+        );
         return parseStructuredJson(schema, responseText);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -181,7 +287,8 @@ export async function generateJson<T>(
               model,
               apiKey,
               options,
-              repairSource
+              repairSource,
+              responseSchema
             );
             return parseStructuredJson(schema, repairedText);
           } catch (repairError) {
