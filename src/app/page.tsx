@@ -399,16 +399,9 @@ export default function Home() {
         </div>
 
         <header className="rounded-3xl border border-zinc-200/70 bg-white/70 p-6 shadow-sm backdrop-blur md:p-8">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-zinc-500">
-            Renewal Negotiation Copilot
-          </p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight md:text-5xl">
-            Turn raw SaaS pricing into negotiation leverage
+          <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">
+            Stop overpaying on your SaaS subscriptions
           </h1>
-          <p className="mt-4 max-w-3xl text-sm text-zinc-600 md:text-base">
-            Paste your current renewal details. The assistant returns market range,
-            savings estimate, leverage points, and a counter-email draft.
-          </p>
         </header>
 
         <Card className="border-zinc-200/80 bg-white/80 shadow-xl backdrop-blur">
