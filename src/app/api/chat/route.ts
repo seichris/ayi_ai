@@ -563,7 +563,7 @@ export async function POST(request: NextRequest) {
       retries: 1,
     });
 
-    const isAllowed = classification.decision === "allowed";
+    let isAllowed = classification.decision === "allowed";
     console.info("chat.classification", {
       ip,
       sessionId,
@@ -572,6 +572,26 @@ export async function POST(request: NextRequest) {
     });
 
     if (!isAllowed) {
+      if (prisma && sessionId) {
+        const { state } = await loadIntakeState(sessionId);
+
+        const shouldBypassClassifier =
+          state.stage === "confirm_more" ||
+          state.stage === "confirm_plans" ||
+          state.stage === "prompt_signin";
+
+        if (shouldBypassClassifier) {
+          isAllowed = true;
+          console.info("chat.classification_bypass", {
+            ip,
+            sessionId,
+            stage: state.stage,
+            message: userMessage,
+          });
+        }
+      }
+
+      if (!isAllowed) {
       await persistMessage({
         sessionId,
         role: "assistant",
@@ -583,6 +603,7 @@ export async function POST(request: NextRequest) {
         onTopic: false,
         replyText: OFF_TOPIC_MESSAGE,
       });
+      }
     }
 
     if (prisma && sessionId) {
