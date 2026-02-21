@@ -170,8 +170,9 @@ export async function generateJson<T>(
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
+        const repairSource = responseText;
         const canRepair =
-          responseText &&
+          repairSource !== null &&
           (lastError instanceof SyntaxError || lastError instanceof z.ZodError);
 
         if (canRepair) {
@@ -180,7 +181,7 @@ export async function generateJson<T>(
               model,
               apiKey,
               options,
-              responseText
+              repairSource
             );
             return parseStructuredJson(schema, repairedText);
           } catch (repairError) {
