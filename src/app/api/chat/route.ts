@@ -745,56 +745,56 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const userMessage = parsedBody.data.message.trim();
-    const sessionId = await ensureSessionId(parsedBody.data.sessionId);
-    const history = await loadPromptMessages(sessionId);
+	    const userMessage = parsedBody.data.message.trim();
 
-    await persistMessage({
-      sessionId,
+	    if (DEMO_MODE_ENABLED) {
+	      const demoItems = demoLineItems();
+	      const guidance = demoGuidance(demoItems);
+	      const assistantReply = "Here is your SaaS renewal negotiation brief.";
+
+	      // Demo mode must not depend on DB or Gemini. Persist only if available.
+	      const sessionId = prisma ? await ensureSessionId(parsedBody.data.sessionId) : undefined;
+	      await persistMessage({
+	        sessionId,
+	        role: "user",
+	        content: userMessage,
+	      });
+	      await persistMessage({
+	        sessionId,
+	        role: "assistant",
+	        content: assistantReply,
+	        analysis: guidance,
+	      });
+
+	      if (prisma && sessionId) {
+	        const intakeState: IntakeState = {
+	          lineItems: demoItems,
+	          planSuggestions: {},
+	          stage: "briefed",
+	        };
+	        await persistIntakeState(sessionId, intakeState);
+	      }
+
+	      return NextResponse.json({
+	        sessionId,
+	        onTopic: true,
+	        replyText: assistantReply,
+	        analysis: guidance,
+	        actions: [{ type: "google_signin" }],
+	      });
+	    }
+
+	    const sessionId = await ensureSessionId(parsedBody.data.sessionId);
+	    const history = await loadPromptMessages(sessionId);
+
+	    await persistMessage({
+	      sessionId,
       role: "user",
       content: userMessage,
     });
 
-    if (DEMO_MODE_ENABLED) {
-      const demoItems = demoLineItems();
-      const guidance = demoGuidance(demoItems);
-
-      const assistantReply = "Here is your SaaS renewal negotiation brief.";
-
-      await persistMessage({
-        sessionId,
-        role: "assistant",
-        content: assistantReply,
-        analysis: guidance,
-      });
-
-      if (prisma && sessionId) {
-        const intakeState: IntakeState = {
-          lineItems: demoItems,
-          planSuggestions: {},
-          stage: "briefed",
-        };
-        await persistIntakeState(sessionId, intakeState);
-      }
-
-      const action =
-        prisma && sessionId
-          ? (await loadIntakeState(sessionId)).userId
-            ? ({ type: "google_connect_gmail" } as const)
-            : ({ type: "google_signin" } as const)
-          : ({ type: "google_signin" } as const);
-
-      return NextResponse.json({
-        sessionId,
-        onTopic: true,
-        replyText: assistantReply,
-        analysis: guidance,
-        actions: [action],
-      });
-    }
-
-    const intake = prisma && sessionId ? await loadIntakeState(sessionId) : null;
-    const intakeState = intake?.state;
+	    const intake = prisma && sessionId ? await loadIntakeState(sessionId) : null;
+	    const intakeState = intake?.state;
 
     const shouldBypassClassifier = Boolean(
       intakeState &&
