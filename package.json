@@ -9,6 +9,7 @@
     "lint": "eslint",
     "prompt:eval": "tsx scripts/prompt-eval.ts",
     "perks:sync": "tsx scripts/sync-startup-perks.ts",
+    "vendor-contacts:seed": "tsx scripts/seed-vendor-contacts.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev"
   },

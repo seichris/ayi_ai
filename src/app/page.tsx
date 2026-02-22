@@ -21,6 +21,10 @@ type AuthMeResponse = {
   gmailConnected: boolean;
 };
 
+type VendorContactsResponse = {
+  contacts?: Record<string, { tool: string; email: string; sourceUrl?: string | null }>;
+};
+
 type UiMessage = {
   id: string;
   role: "user" | "assistant";
@@ -173,6 +177,9 @@ export default function Home() {
   const [isAccountPanelOpen, setIsAccountPanelOpen] = useState(false);
   const [vendorEmails, setVendorEmails] = useState<Record<string, string>>({});
   const [sendingVendorEmails, setSendingVendorEmails] = useState<Record<string, boolean>>({});
+  const [vendorContactSuggestions, setVendorContactSuggestions] = useState<Record<string, string>>(
+    {}
+  );
 
   const canSubmit = inputValue.trim().length > 0 && !isSubmitting;
 
@@ -300,6 +307,97 @@ export default function Home() {
 
     maybeGenerateAfterSignin();
   }, [isHydrating, sessionId]);
+
+  useEffect(() => {
+    const tools = new Set<string>();
+    for (const message of messages) {
+      if (!message.analysis) {
+        continue;
+      }
+      for (const tool of toolsFromAnalysis(message.analysis)) {
+        const normalized = normalizeToolKey(tool);
+        if (!vendorContactSuggestions[normalized]) {
+          tools.add(tool);
+        }
+      }
+    }
+
+    if (tools.size === 0) {
+      return;
+    }
+
+    const params = new URLSearchParams();
+    for (const tool of tools) {
+      params.append("tool", tool);
+    }
+
+    let cancelled = false;
+
+    async function loadVendorContacts() {
+      try {
+        const response = await fetch(`/api/vendor-contacts?${params.toString()}`);
+        if (!response.ok) {
+          return;
+        }
+
+        const raw = (await response.json()) as VendorContactsResponse;
+        if (cancelled || !raw.contacts) {
+          return;
+        }
+
+        setVendorContactSuggestions((current) => {
+          const next = { ...current };
+          for (const [toolKey, contact] of Object.entries(raw.contacts ?? {})) {
+            if (typeof contact?.email !== "string" || contact.email.trim().length === 0) {
+              continue;
+            }
+            next[normalizeToolKey(toolKey)] = contact.email.trim().toLowerCase();
+          }
+          return next;
+        });
+      } catch {
+        // Best effort only. UI still supports manual email entry.
+      }
+    }
+
+    loadVendorContacts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [messages, vendorContactSuggestions]);
+
+  useEffect(() => {
+    if (Object.keys(vendorContactSuggestions).length === 0) {
+      return;
+    }
+
+    setVendorEmails((current) => {
+      const next = { ...current };
+      let changed = false;
+
+      for (const message of messages) {
+        if (!message.analysis) {
+          continue;
+        }
+
+        for (const tool of toolsFromAnalysis(message.analysis)) {
+          const key = toolSendKey(message.id, tool);
+          const suggested = vendorContactSuggestions[normalizeToolKey(tool)];
+          const existing = next[key]?.trim() ?? "";
+
+          if (!suggested || existing.length > 0) {
+            continue;
+          }
+
+          next[key] = suggested;
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+  }, [messages, vendorContactSuggestions]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -466,8 +564,10 @@ export default function Home() {
     try {
       await sendViaGmail({ to, subject, body });
       window.alert(`Sent ${params.tool} email to ${to}.`);
-    } catch {
-      window.alert(`I couldn’t send the ${params.tool} email. Please try again.`);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : `I couldn’t send the ${params.tool} email.`;
+      window.alert(message);
     } finally {
       setSendingVendorEmails((current) => ({ ...current, [key]: false }));
     }
@@ -739,6 +839,8 @@ export default function Home() {
                                   {analysisTools.map((tool) => {
                                     const key = toolSendKey(message.id, tool);
                                     const sending = sendingVendorEmails[key] === true;
+                                    const suggestedEmail =
+                                      vendorContactSuggestions[normalizeToolKey(tool)];
 
                                     return (
                                       <div key={key} className="grid gap-2 md:grid-cols-[1fr_auto]">
@@ -751,7 +853,9 @@ export default function Home() {
                                               [key]: event.target.value,
                                             }))
                                           }
-                                          placeholder={`${tool} billing contact email`}
+                                          placeholder={
+                                            suggestedEmail ?? `${tool} billing contact email`
+                                          }
                                           className="bg-white"
                                         />
                                         <Button

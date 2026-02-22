@@ -7,7 +7,7 @@ import { gmailSend } from "@/lib/server/gmail";
 export const runtime = "nodejs";
 
 const sendSchema = z.object({
-  to: z.string().min(3).max(320),
+  to: z.string().trim().email().max(320),
   subject: z.string().min(1).max(200),
   body: z.string().min(1).max(12_000),
 });
@@ -30,7 +30,6 @@ export async function POST(request: NextRequest) {
       to: parsed.data.to,
       subject: parsed.data.subject,
       body: parsed.data.body,
-      fromName: user.name ?? undefined,
     });
 
     return NextResponse.json({ ok: true, id: sent.id, threadId: sent.threadId });
@@ -39,4 +38,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
-

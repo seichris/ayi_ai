@@ -123,3 +123,18 @@ model StartupPerk {
   @@index([category])
   @@map("startup_perks")
 }
+
+model VendorContact {
+  id            String   @id @default(cuid())
+  tool          String
+  lowerTool     String   @unique
+  aliases       String[]
+  contactEmail  String
+  sourceUrl     String?
+  notes         String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tool])
+  @@map("vendor_contacts")
+}

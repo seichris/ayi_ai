@@ -13,12 +13,13 @@ export function buildRawEmail(params: {
   to: string;
   subject: string;
   body: string;
-  fromName?: string;
 }): string {
+  const sanitizedTo = params.to.replace(/[\r\n]+/g, " ").trim();
+  const sanitizedSubject = params.subject.replace(/[\r\n]+/g, " ").trim();
   const headers = [
-    params.fromName ? `From: ${params.fromName}` : null,
-    `To: ${params.to}`,
-    `Subject: ${params.subject}`,
+    // Do not set From manually; Gmail will use the authenticated sender.
+    `To: ${sanitizedTo}`,
+    `Subject: ${sanitizedSubject}`,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: 7bit",
@@ -70,14 +71,12 @@ export async function gmailSend(params: {
   to: string;
   subject: string;
   body: string;
-  fromName?: string;
 }): Promise<{ id: string; threadId?: string }> {
   const accessToken = await getGmailAccessToken(params.userId);
   const raw = buildRawEmail({
     to: params.to,
     subject: params.subject,
     body: params.body,
-    fromName: params.fromName,
   });
   const encoded = base64UrlEncode(raw);
 
@@ -90,12 +89,34 @@ export async function gmailSend(params: {
     body: JSON.stringify({ raw: encoded }),
   });
 
-  const json = (await response.json()) as { id?: string; threadId?: string; error?: unknown };
+  const rawText = await response.text();
+  let json: {
+    id?: string;
+    threadId?: string;
+    error?: {
+      code?: number;
+      message?: string;
+      status?: string;
+      errors?: Array<{ message?: string; reason?: string }>;
+    };
+  } = {};
+  try {
+    json = JSON.parse(rawText) as typeof json;
+  } catch {
+    json = {};
+  }
 
   if (!response.ok || !json.id) {
-    throw new Error("Gmail send failed.");
+    const apiMessage = json.error?.message;
+    const apiReason = json.error?.errors?.[0]?.reason;
+    const details =
+      apiMessage || apiReason
+        ? `: ${[apiMessage, apiReason].filter(Boolean).join(" | ")}`
+        : rawText
+          ? `: ${rawText.slice(0, 500)}`
+          : "";
+    throw new Error(`Gmail send failed (HTTP ${response.status})${details}`);
   }
 
   return { id: json.id, threadId: json.threadId };
 }
-
