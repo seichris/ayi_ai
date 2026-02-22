@@ -5,6 +5,7 @@ import { renewalAdviceSchema, intakeStateSchema } from "@/lib/contracts";
 import { benchmarkContext } from "@/lib/benchmarks";
 import { prisma } from "@/lib/db";
 import { getAuthenticatedUser } from "@/lib/server/auth";
+import { ensureBenchmarksForTools } from "@/lib/server/benchmark-discovery";
 import { generateJson } from "@/lib/gemini";
 
 export const runtime = "nodejs";
@@ -72,6 +73,8 @@ export async function POST(request: NextRequest) {
       return `- ${parts.join(", ")}`;
     })
     .join("\n");
+
+  await ensureBenchmarksForTools(state.lineItems.map((item) => item.tool));
 
   const benchmarkText = benchmarkContext(state.lineItems.map((item) => item.tool).join(", "));
 

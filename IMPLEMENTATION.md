@@ -149,6 +149,7 @@ We will separate identity from Gmail access.
 - `GOOGLE_OAUTH_CLIENT_SECRET`
 - `GOOGLE_OAUTH_REDIRECT_URL` (Google Sign-In callback URL)
 - `GOOGLE_GMAIL_OAUTH_REDIRECT_URL` (Gmail connect callback URL)
+- `BENCHMARK_AUTO_DISCOVERY_ENABLED` (set to `false` to disable unknown-tool benchmark discovery + persistence)
 - `TOPIC_GUARDRAILS_ENABLED` (set to `false` to disable on-topic classifier)
 - `DEMO_MODE_ENABLED` (set to `true` to return a prefilled demo brief after the first message)
 

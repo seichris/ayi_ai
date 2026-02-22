@@ -95,6 +95,47 @@ export const SAAS_BENCHMARKS: SaaSBenchmark[] = [
   },
 ];
 
+function normalizeAlias(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function registerBenchmark(benchmark: SaaSBenchmark): void {
+  const normalizedTool = normalizeAlias(benchmark.tool);
+  const aliases = Array.from(
+    new Set(
+      [benchmark.tool, ...benchmark.aliases]
+        .map(normalizeAlias)
+        .filter((alias) => alias.length > 0)
+    )
+  );
+
+  const normalized: SaaSBenchmark = {
+    tool: benchmark.tool.trim(),
+    aliases,
+    plans: benchmark.plans?.map((plan) => plan.trim()).filter((plan) => plan.length > 0),
+    marketAnnualPerSeatUsd: {
+      min: Math.round(benchmark.marketAnnualPerSeatUsd.min),
+      max: Math.round(benchmark.marketAnnualPerSeatUsd.max),
+    },
+    typicalDiscountPct: {
+      min: Math.round(benchmark.typicalDiscountPct.min),
+      max: Math.round(benchmark.typicalDiscountPct.max),
+    },
+    notes: benchmark.notes.trim(),
+  };
+
+  const existingIndex = SAAS_BENCHMARKS.findIndex(
+    (item) => item.tool.trim().toLowerCase() === normalizedTool
+  );
+
+  if (existingIndex >= 0) {
+    SAAS_BENCHMARKS[existingIndex] = normalized;
+    return;
+  }
+
+  SAAS_BENCHMARKS.push(normalized);
+}
+
 export function findRelevantBenchmarks(input: string): SaaSBenchmark[] {
   const normalized = input.toLowerCase();
   const matches = SAAS_BENCHMARKS.filter((benchmark) =>

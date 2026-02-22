@@ -81,3 +81,45 @@ model ChatMessage {
   @@index([sessionId, createdAt])
   @@map("chat_messages")
 }
+
+model ToolBenchmark {
+  id                       String   @id @default(cuid())
+  tool                     String
+  lowerTool                String   @unique
+  aliases                  String[]
+  plans                    String[]
+  marketAnnualPerSeatMinUsd Int
+  marketAnnualPerSeatMaxUsd Int
+  typicalDiscountMinPct    Int
+  typicalDiscountMaxPct    Int
+  notes                    String   @db.Text
+  source                   String   @default("auto_discovered")
+  confidence               String?
+  assumptions              Json?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@index([tool])
+  @@map("tool_benchmarks")
+}
+
+model StartupPerk {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  programName     String
+  providerName    String
+  amount          String
+  category        String
+  description     String   @db.Text
+  eligibility     String   @db.Text
+  additionalNotes String   @db.Text
+  applyUrl        String
+  sourceUrl       String
+  scrapedAt       DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([providerName])
+  @@index([category])
+  @@map("startup_perks")
+}

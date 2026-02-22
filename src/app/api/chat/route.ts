@@ -14,6 +14,7 @@ import {
 import { benchmarkContext, findBenchmarkForTool, planOptionsForTool } from "@/lib/benchmarks";
 import { prisma } from "@/lib/db";
 import { generateJson } from "@/lib/gemini";
+import { ensureBenchmarksForTools } from "@/lib/server/benchmark-discovery";
 
 export const runtime = "nodejs";
 
@@ -875,12 +876,14 @@ export async function POST(request: NextRequest) {
           };
           await persistIntakeState(sessionId, nextState);
 
-	          const missingPrices = missingPriceTools(filled);
-	          if (missingPrices.length > 0) {
-	            const replyText = buildMissingPricePrompt(filled, missingPrices);
-	            await persistMessage({ sessionId, role: "assistant", content: replyText });
-	            return NextResponse.json({ sessionId, onTopic: true, replyText });
-	          }
+          await ensureBenchmarksForTools(filled.map((item) => item.tool));
+
+          const missingPrices = missingPriceTools(filled);
+          if (missingPrices.length > 0) {
+            const replyText = buildMissingPricePrompt(filled, missingPrices);
+            await persistMessage({ sessionId, role: "assistant", content: replyText });
+            return NextResponse.json({ sessionId, onTopic: true, replyText });
+          }
 
           const replyText =
             "Got it. Is that all the subscriptions you want to include, or do you want to add another? Reply “yes” to add more, or “no” if that’s all.";
@@ -905,14 +908,16 @@ export async function POST(request: NextRequest) {
             };
             await persistIntakeState(sessionId, nextState);
 
-	            const missingPrices = missingPriceTools(filled);
-	            const replyText =
-	              missingPrices.length > 0
-	                ? buildMissingPricePrompt(filled, missingPrices)
-	                : "Got it. Do you want to add another subscription, or is that all?";
-	            await persistMessage({ sessionId, role: "assistant", content: replyText });
-	            return NextResponse.json({ sessionId, onTopic: true, replyText });
-	          }
+            await ensureBenchmarksForTools(filled.map((item) => item.tool));
+
+            const missingPrices = missingPriceTools(filled);
+            const replyText =
+              missingPrices.length > 0
+                ? buildMissingPricePrompt(filled, missingPrices)
+                : "Got it. Do you want to add another subscription, or is that all?";
+            await persistMessage({ sessionId, role: "assistant", content: replyText });
+            return NextResponse.json({ sessionId, onTopic: true, replyText });
+          }
         }
 
         const replyText =
@@ -934,21 +939,23 @@ export async function POST(request: NextRequest) {
           const nextState: IntakeState = { ...state, stage: "ready" };
           await persistIntakeState(sessionId, nextState);
 
-	          const itemsText = nextState.lineItems
-	            .map((item) => {
-	              const parts = [
-	                `tool=${item.tool}`,
-	                item.plan ? `plan=${item.plan}` : null,
-	                typeof item.seats === "number" ? `seats=${item.seats}` : null,
-	                typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
-	                typeof item.annualCostPerSeat === "number"
-	                  ? `annualCostPerSeat=${item.annualCostPerSeat}`
-	                  : null,
-	                item.term ? `term=${item.term}` : null,
-	              ].filter(Boolean);
-	              return `- ${parts.join(", ")}`;
-	            })
-	            .join("\n");
+          await ensureBenchmarksForTools(nextState.lineItems.map((item) => item.tool));
+
+          const itemsText = nextState.lineItems
+            .map((item) => {
+              const parts = [
+                `tool=${item.tool}`,
+                item.plan ? `plan=${item.plan}` : null,
+                typeof item.seats === "number" ? `seats=${item.seats}` : null,
+                typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
+                typeof item.annualCostPerSeat === "number"
+                  ? `annualCostPerSeat=${item.annualCostPerSeat}`
+                  : null,
+                item.term ? `term=${item.term}` : null,
+              ].filter(Boolean);
+              return `- ${parts.join(", ")}`;
+            })
+            .join("\n");
 
           const benchmarkText = benchmarkContext(
             nextState.lineItems.map((item) => item.tool).join(", ")
@@ -1027,21 +1034,23 @@ export async function POST(request: NextRequest) {
       }
 
       if (state.stage === "ready") {
-	        const itemsText = state.lineItems
-	          .map((item) => {
-	            const parts = [
-	              `tool=${item.tool}`,
-	              item.plan ? `plan=${item.plan}` : null,
-	              typeof item.seats === "number" ? `seats=${item.seats}` : null,
-	              typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
-	              typeof item.annualCostPerSeat === "number"
-	                ? `annualCostPerSeat=${item.annualCostPerSeat}`
-	                : null,
-	              item.term ? `term=${item.term}` : null,
-	            ].filter(Boolean);
-	            return `- ${parts.join(", ")}`;
-	          })
-	          .join("\n");
+        await ensureBenchmarksForTools(state.lineItems.map((item) => item.tool));
+
+        const itemsText = state.lineItems
+          .map((item) => {
+            const parts = [
+              `tool=${item.tool}`,
+              item.plan ? `plan=${item.plan}` : null,
+              typeof item.seats === "number" ? `seats=${item.seats}` : null,
+              typeof item.annualCost === "number" ? `annualCost=${item.annualCost}` : null,
+              typeof item.annualCostPerSeat === "number"
+                ? `annualCostPerSeat=${item.annualCostPerSeat}`
+                : null,
+              item.term ? `term=${item.term}` : null,
+            ].filter(Boolean);
+            return `- ${parts.join(", ")}`;
+          })
+          .join("\n");
 
         const benchmarkText = benchmarkContext(
           state.lineItems.map((item) => item.tool).join(", ")
@@ -1049,18 +1058,18 @@ export async function POST(request: NextRequest) {
 
         let guidance: RenewalAdvice;
 
-	        try {
-	          guidance = await generateJson(renewalAdviceSchema, {
-	            systemInstruction: ADVISOR_SYSTEM_PROMPT,
-	            userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nSubscriptions:\n${itemsText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
-	            temperature: 0,
-	            maxOutputTokens: 4096,
-	            retries: 1,
-	          });
-	        } catch (advisorError) {
-	          const message =
-	            advisorError instanceof Error ? advisorError.message : String(advisorError);
-	          const fallbackReply = buildAdvisorErrorReply(state.lineItems, message);
+        try {
+          guidance = await generateJson(renewalAdviceSchema, {
+            systemInstruction: ADVISOR_SYSTEM_PROMPT,
+            userPrompt: `Use this benchmark context as directional input (not exact pricing):\n${benchmarkText}\n\nSubscriptions:\n${itemsText}\n\nReturn only JSON matching the required schema.\n\nOutput requirements:\n- Keep leverage points under 18 words each.\n- Counter email should be concise and negotiation-ready.\n- If data is missing, include clarifying questions and lower confidence.`,
+            temperature: 0,
+            maxOutputTokens: 4096,
+            retries: 1,
+          });
+        } catch (advisorError) {
+          const message =
+            advisorError instanceof Error ? advisorError.message : String(advisorError);
+          const fallbackReply = buildAdvisorErrorReply(state.lineItems, message);
 
           console.error("chat.advisor_error", {
             ip,
@@ -1147,6 +1156,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ sessionId, onTopic: true, replyText });
       }
 
+      await ensureBenchmarksForTools(mergedItems.map((item) => item.tool));
+
       const missingPlansBefore = missingPlanTools(mergedItems);
       if (
         missingPlansBefore.length === 1 &&
@@ -1225,11 +1236,11 @@ export async function POST(request: NextRequest) {
         if (missingPlansAfterAutofill.length === 0) {
           const missingPrices = missingPriceTools(mergedItems);
 
-	          if (missingPrices.length > 0) {
-	            const replyText = buildMissingPricePrompt(mergedItems, missingPrices);
-	            await persistMessage({ sessionId, role: "assistant", content: replyText });
-	            return NextResponse.json({ sessionId, onTopic: true, replyText });
-	          }
+          if (missingPrices.length > 0) {
+            const replyText = buildMissingPricePrompt(mergedItems, missingPrices);
+            await persistMessage({ sessionId, role: "assistant", content: replyText });
+            return NextResponse.json({ sessionId, onTopic: true, replyText });
+          }
 
           nextState.stage = "confirm_more";
           await persistIntakeState(sessionId, nextState);

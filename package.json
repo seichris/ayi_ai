@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "prompt:eval": "tsx scripts/prompt-eval.ts",
+    "perks:sync": "tsx scripts/sync-startup-perks.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev"
   },
