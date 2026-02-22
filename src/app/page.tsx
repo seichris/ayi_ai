@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ChatApiResponse,
@@ -54,6 +55,99 @@ function analysisEmailText(analysis: RenewalAdvice): string {
   return `Subject: ${analysis.counterEmail.subject}\n\n${analysis.counterEmail.body}`;
 }
 
+function normalizeToolKey(tool: string): string {
+  return tool.trim().toLowerCase();
+}
+
+function toolsFromAnalysis(analysis: RenewalAdvice): string[] {
+  const tools: string[] = [];
+  const seen = new Set<string>();
+
+  for (const item of analysis.lineItems) {
+    const tool = item.tool.trim();
+    if (!tool) {
+      continue;
+    }
+
+    const key = normalizeToolKey(tool);
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    tools.push(tool);
+  }
+
+  return tools;
+}
+
+function toolSendKey(messageId: string, tool: string): string {
+  return `${messageId}:${normalizeToolKey(tool)}`;
+}
+
+function lineItemSummary(
+  item: RenewalAdvice["lineItems"][number],
+  currency: string
+): string[] {
+  const lines: string[] = [];
+
+  if (item.plan) {
+    lines.push(`Plan: ${item.plan}`);
+  }
+  if (typeof item.seats === "number") {
+    lines.push(`Seats: ${item.seats}`);
+  }
+  if (typeof item.annualCost === "number") {
+    lines.push(`Current annual spend: ${formatCurrency(item.annualCost, currency)}`);
+  } else if (typeof item.annualCostPerSeat === "number") {
+    lines.push(
+      `Current annual per-seat price: ${formatCurrency(item.annualCostPerSeat, currency)}`
+    );
+  }
+
+  return lines;
+}
+
+function toolEmailFromAnalysis(
+  analysis: RenewalAdvice,
+  tool: string
+): { subject: string; body: string } {
+  if (toolsFromAnalysis(analysis).length <= 1) {
+    return {
+      subject: analysis.counterEmail.subject,
+      body: analysis.counterEmail.body,
+    };
+  }
+
+  const match = analysis.lineItems.find(
+    (item) => normalizeToolKey(item.tool) === normalizeToolKey(tool)
+  );
+
+  const currency = match?.currency ?? analysis.marketRange.currency ?? "USD";
+  const summaryLines = match ? lineItemSummary(match, currency) : [];
+  const summaryBlock =
+    summaryLines.length > 0
+      ? `\nCurrent account context:\n${summaryLines
+          .map((line) => `- ${line}`)
+          .join("\n")}\n`
+      : "";
+
+  const body = `Hi team,
+
+We are reviewing our ${tool} renewal and need to align pricing with current market benchmarks.${summaryBlock}
+Please send an updated proposal with:
+- improved unit pricing for our current scope
+- available annual and multi-year options
+- written renewal protections (price caps and clear terms)
+
+Thanks,`;
+
+  return {
+    subject: `${tool} renewal pricing adjustment request`,
+    body,
+  };
+}
+
 function mapHistoryToUiMessages(history: ChatSessionHistoryResponse): UiMessage[] {
   return history.messages.map((message) => ({
     id: message.id,
@@ -77,6 +171,8 @@ export default function Home() {
   const [authLoading, setAuthLoading] = useState(true);
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
   const [isAccountPanelOpen, setIsAccountPanelOpen] = useState(false);
+  const [vendorEmails, setVendorEmails] = useState<Record<string, string>>({});
+  const [sendingVendorEmails, setSendingVendorEmails] = useState<Record<string, boolean>>({});
 
   const canSubmit = inputValue.trim().length > 0 && !isSubmitting;
 
@@ -326,37 +422,122 @@ export default function Home() {
     }
   }
 
-  async function handleSendEmail(analysis: RenewalAdvice) {
+  async function sendViaGmail(params: {
+    to: string;
+    subject: string;
+    body: string;
+  }): Promise<void> {
+    const response = await fetch("/api/gmail/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: params.to,
+        subject: params.subject,
+        body: params.body,
+      }),
+    });
+
+    const json = (await response.json()) as { ok?: boolean; error?: string };
+    if (!response.ok || !json.ok) {
+      throw new Error(json.error ?? "Send failed");
+    }
+  }
+
+  async function handleSendSingleToolEmail(params: {
+    messageId: string;
+    analysis: RenewalAdvice;
+    tool: string;
+  }) {
     if (!authMe.gmailConnected) {
       handleConnectGmail();
       return;
     }
 
-    const to = window.prompt("Vendor email address (To:)");
+    const key = toolSendKey(params.messageId, params.tool);
+    const to = vendorEmails[key]?.trim();
     if (!to) {
+      window.alert(`Please enter a contact email for ${params.tool}.`);
       return;
     }
 
+    const { subject, body } = toolEmailFromAnalysis(params.analysis, params.tool);
+    setSendingVendorEmails((current) => ({ ...current, [key]: true }));
+
     try {
-      const response = await fetch("/api/gmail/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to,
-          subject: analysis.counterEmail.subject,
-          body: analysis.counterEmail.body,
-        }),
-      });
-
-      const json = (await response.json()) as { ok?: boolean; error?: string };
-      if (!response.ok || !json.ok) {
-        throw new Error(json.error ?? "Send failed");
-      }
-
-      window.alert("Sent.");
+      await sendViaGmail({ to, subject, body });
+      window.alert(`Sent ${params.tool} email to ${to}.`);
     } catch {
-      window.alert("I couldn’t send that email. Please try again.");
+      window.alert(`I couldn’t send the ${params.tool} email. Please try again.`);
+    } finally {
+      setSendingVendorEmails((current) => ({ ...current, [key]: false }));
     }
+  }
+
+  async function handleSendAllToolEmails(messageId: string, analysis: RenewalAdvice) {
+    if (!authMe.gmailConnected) {
+      handleConnectGmail();
+      return;
+    }
+
+    const tools = toolsFromAnalysis(analysis);
+    if (tools.length === 0) {
+      window.alert("No tools found for this brief.");
+      return;
+    }
+
+    const missingTools = tools.filter((tool) => {
+      const key = toolSendKey(messageId, tool);
+      return !vendorEmails[key]?.trim();
+    });
+    if (missingTools.length > 0) {
+      window.alert(`Please enter contact emails for: ${missingTools.join(", ")}.`);
+      return;
+    }
+
+    const keys = tools.map((tool) => toolSendKey(messageId, tool));
+    setSendingVendorEmails((current) => {
+      const next = { ...current };
+      for (const key of keys) {
+        next[key] = true;
+      }
+      return next;
+    });
+
+    const sentTools: string[] = [];
+    const failedTools: string[] = [];
+
+    for (const tool of tools) {
+      const key = toolSendKey(messageId, tool);
+      const to = vendorEmails[key]!.trim();
+      const { subject, body } = toolEmailFromAnalysis(analysis, tool);
+
+      try {
+        await sendViaGmail({ to, subject, body });
+        sentTools.push(tool);
+      } catch {
+        failedTools.push(tool);
+      }
+    }
+
+    setSendingVendorEmails((current) => {
+      const next = { ...current };
+      for (const key of keys) {
+        next[key] = false;
+      }
+      return next;
+    });
+
+    if (failedTools.length === 0) {
+      window.alert(`Sent ${sentTools.length} vendor email(s).`);
+      return;
+    }
+
+    if (sentTools.length === 0) {
+      window.alert("I couldn’t send those emails. Please try again.");
+      return;
+    }
+
+    window.alert(`Sent: ${sentTools.join(", ")}. Failed: ${failedTools.join(", ")}.`);
   }
 
   return (
@@ -438,6 +619,12 @@ export default function Home() {
                 messages.map((message) => {
                   const isAssistant = message.role === "assistant";
                   const analysis = message.analysis;
+                  const analysisTools = analysis ? toolsFromAnalysis(analysis) : [];
+                  const isSendingAnyVendorEmail =
+                    analysis &&
+                    analysisTools.some(
+                      (tool) => sendingVendorEmails[toolSendKey(message.id, tool)] === true
+                    );
 
                   return (
                     <div
@@ -526,10 +713,15 @@ export default function Home() {
                                   <Button
                                     size="sm"
                                     variant="default"
-                                    onClick={() => handleSendEmail(analysis)}
+                                    onClick={() => handleSendAllToolEmails(message.id, analysis)}
                                     type="button"
+                                    disabled={isSendingAnyVendorEmail}
                                   >
-                                    {authMe.gmailConnected ? "Send via Gmail" : "Connect Gmail"}
+                                    {authMe.gmailConnected
+                                      ? analysisTools.length > 1
+                                        ? "Send All via Gmail"
+                                        : "Send via Gmail"
+                                      : "Connect Gmail"}
                                   </Button>
                                 </div>
                               </CardHeader>
@@ -540,6 +732,49 @@ export default function Home() {
                                 <p className="whitespace-pre-wrap leading-6">
                                   {analysis.counterEmail.body}
                                 </p>
+                                <div className="mt-4 space-y-3 rounded-xl border border-zinc-200 bg-white p-3">
+                                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                                    Vendor Contacts
+                                  </p>
+                                  {analysisTools.map((tool) => {
+                                    const key = toolSendKey(message.id, tool);
+                                    const sending = sendingVendorEmails[key] === true;
+
+                                    return (
+                                      <div key={key} className="grid gap-2 md:grid-cols-[1fr_auto]">
+                                        <Input
+                                          type="email"
+                                          value={vendorEmails[key] ?? ""}
+                                          onChange={(event) =>
+                                            setVendorEmails((current) => ({
+                                              ...current,
+                                              [key]: event.target.value,
+                                            }))
+                                          }
+                                          placeholder={`${tool} billing contact email`}
+                                          className="bg-white"
+                                        />
+                                        <Button
+                                          size="sm"
+                                          type="button"
+                                          onClick={() =>
+                                            handleSendSingleToolEmail({
+                                              messageId: message.id,
+                                              analysis,
+                                              tool,
+                                            })
+                                          }
+                                          disabled={sending}
+                                        >
+                                          {sending ? `Sending ${tool}...` : `Send ${tool}`}
+                                        </Button>
+                                      </div>
+                                    );
+                                  })}
+                                  <p className="text-xs text-zinc-500">
+                                    Each tool sends as a separate email from your connected Gmail account.
+                                  </p>
+                                </div>
                               </CardContent>
                             </Card>
 
